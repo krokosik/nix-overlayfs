@@ -1,0 +1,96 @@
+name: Wine Mono metadata
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/wine-mono.yml
+      - scripts/update-wine-mono.py
+      - packages/wine-modules/wine-base-env/**
+      - tests/wine-mono-update/**
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      wine_versions:
+        description: 'Space-separated Wine releases; empty discovers latest stable and development releases'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wine-mono-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
+      - run: nix build .#checks.x86_64-linux.wine-mono-update --no-link
+
+  update:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
+      - name: Discover and verify Mono releases
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINE_VERSIONS: ${{ inputs.wine_versions }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess
+          args = ["python3", "scripts/update-wine-mono.py", "--report", "/tmp/wine-mono-report.md"]
+          for version in os.environ.get("WINE_VERSIONS", "").split():
+              args += ["--wine-version", version]
+          subprocess.run(args, check=True)
+          PY
+          if git diff --quiet -- packages/wine-modules/wine-base-env/wine-mono.json; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check generated metadata and updater
+        if: steps.update.outputs.changed == 'true'
+        run: nix build .#checks.x86_64-linux.wine-mono-update --no-link
+      - name: Open or update reviewed dependency PR
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin automation/wine-mono:refs/remotes/origin/automation/wine-mono || true
+          catalog=packages/wine-modules/wine-base-env/wine-mono.json
+          if git show "origin/automation/wine-mono:$catalog" > /tmp/previous-wine-mono.json 2>/dev/null &&
+             cmp -s "$catalog" /tmp/previous-wine-mono.json; then
+            echo 'Pending update already contains this metadata; no new commit needed.'
+          else
+            git switch -c automation/wine-mono
+            git add "$catalog"
+            git commit -m 'Update Wine Mono release metadata'
+            git push --force-with-lease origin HEAD:automation/wine-mono
+          fi
+          if [ -n "$(gh pr list --head automation/wine-mono --base "$BASE_BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr edit automation/wine-mono --body-file /tmp/wine-mono-report.md
+          else
+            gh pr create --draft --base "$BASE_BRANCH" --head automation/wine-mono \
+              --title 'Update Wine Mono release metadata' --body-file /tmp/wine-mono-report.md
+          fi

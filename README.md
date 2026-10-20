@@ -354,3 +354,8 @@ for Linux without needing to distribute the installers themselves.
 
 Many thanks to [nix-overlayfs concept by xstepa73](https://github.com/xstepa73/nix-overlayfs),
 upon which this is based.
+
+## Maintaining Wine Mono metadata
+
+See [Wine Mono updates](docs/wine-mono-updates.md) for the checksum-verifying
+updater, scheduled draft PRs, and runtime validation required before merging.
