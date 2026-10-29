@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update reviewed Mono metadata from immutable Wine release sources."""
+"""Update verified Mono metadata from immutable Wine release sources."""
 
 import argparse
 import base64
@@ -115,7 +115,7 @@ def main():
         report.append(f"- Wine **{wine}** → Mono **{mono}** ([Wine source]({source})); MSI SHA-256 verified.")
     after = render(metadata)
     report += ["", "Only dependency metadata is updated. Installer workarounds are unchanged.",
-               "Metadata/selection checks do not establish bootstrap or application compatibility; review new Mono versions before merging."]
+               "Metadata/selection checks do not establish bootstrap or application compatibility; validate new Mono versions with the intended runtime before use."]
     if args.report:
         args.report.write_text("\n".join(report) + "\n")
     print("\n".join(report))

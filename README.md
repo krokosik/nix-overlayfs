@@ -358,4 +358,4 @@ upon which this is based.
 ## Maintaining Wine Mono metadata
 
 See [Wine Mono updates](docs/wine-mono-updates.md) for the checksum-verifying
-updater, scheduled draft PRs, and runtime validation required before merging.
+updater, scheduled metadata commits, and runtime validation.
