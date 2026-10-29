@@ -49,9 +49,11 @@ writeShellScriptBin "nix-overlayfs-open-url" ''
   done
 
   if [ -n "''${XDG_RUNTIME_DIR-}" ] && [ -S "''${XDG_RUNTIME_DIR}/bus" ]; then
+    # Browser startup and URL-forwarding processes can outlive xdg-open.
     if ${systemd}/bin/systemd-run \
       --user \
       --collect \
+      --property=ExitType=cgroup \
       --quiet \
       --description="Open URL from Wine prefix" \
       "''${systemd_env[@]}" \

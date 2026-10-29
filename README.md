@@ -92,6 +92,13 @@ processes without selecting processes globally by command line or environment.
 override `NIX_OVERLAYFS_PROCESS_TERMINATION_TIMEOUT` accepts a non-negative
 duration with an optional `ms`, `s`, `m`, `h`, or `d` suffix.
 
+Host browser requests use a separate transient user service with
+`ExitType=cgroup`, so asynchronous browser startup and URL-forwarding processes
+can finish after `xdg-open` exits. The service remains active until its remaining
+processes exit, which can include the browser's lifetime. This service mode needs
+systemd 250 or newer; if the service cannot be started, the URL opener uses its
+existing detached-process fallback.
+
 ## Headless and ephemeral runtimes
 
 `composeWindowsLayers` can produce a one-shot, non-interactive runtime for CLI
