@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: wine-mono-${{ github.event_name }}-${{ github.ref }}
+  group: wine-mono-${{ github.event_name == 'pull_request' && github.ref || 'update' }}
   cancel-in-progress: false
 
 jobs:
@@ -41,7 +41,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -68,29 +67,15 @@ jobs:
       - name: Check generated metadata and updater
         if: steps.update.outputs.changed == 'true'
         run: nix build .#checks.x86_64-linux.wine-mono-update --no-link
-      - name: Open or update reviewed dependency PR
+      - name: Commit verified metadata
         if: steps.update.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin automation/wine-mono:refs/remotes/origin/automation/wine-mono || true
-          catalog=packages/wine-modules/wine-base-env/wine-mono.json
-          if git show "origin/automation/wine-mono:$catalog" > /tmp/previous-wine-mono.json 2>/dev/null &&
-             cmp -s "$catalog" /tmp/previous-wine-mono.json; then
-            echo 'Pending update already contains this metadata; no new commit needed.'
-          else
-            git switch -c automation/wine-mono
-            git add "$catalog"
-            git commit -m 'Update Wine Mono release metadata'
-            git push --force-with-lease origin HEAD:automation/wine-mono
-          fi
-          if [ -n "$(gh pr list --head automation/wine-mono --base "$BASE_BRANCH" --state open --json number --jq '.[].number')" ]; then
-            gh pr edit automation/wine-mono --body-file /tmp/wine-mono-report.md
-          else
-            gh pr create --draft --base "$BASE_BRANCH" --head automation/wine-mono \
-              --title 'Update Wine Mono release metadata' --body-file /tmp/wine-mono-report.md
-          fi
+          git add packages/wine-modules/wine-base-env/wine-mono.json
+          git commit -m 'Update Wine Mono release metadata'
+          git push origin "HEAD:$BASE_BRANCH"
+      - name: Summarize verified releases
+        run: cat /tmp/wine-mono-report.md >> "$GITHUB_STEP_SUMMARY"
