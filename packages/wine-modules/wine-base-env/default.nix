@@ -37,91 +37,9 @@ let
   };
   prefixInitCommands =
     if runtime ? mkPrefixInitCommands then runtime.mkPrefixInitCommands session else "";
-  wineMonoDownloads = {
-    "11.3.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-11.3.0/wine-mono-11.3.0-x86.msi";
-      hash = "sha256-3y38FmXCURiC58q9Vur9DAo9lOWn6G+Wknf2wYnUGNM=";
-    };
-    "11.1.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-11.1.0/wine-mono-11.1.0-x86.msi";
-      hash = "sha256-3rA0FDH4Jgsgn/9rx53cxUFLl/jpI2q5+9ykzlngqbk=";
-    };
-    "11.0.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-11.0.0/wine-mono-11.0.0-x86.msi";
-      hash = "sha256-1+/t4Lm9z1ITT4zWztWdn+zpdvcLEaQAvbR7hkVpzSc=";
-    };
-    "10.3.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-10.3.0/wine-mono-10.3.0-x86.msi";
-      hash = "sha256-zs5cYxgAlN/98B0PvjYqS2BuUoC5jN/RuFaM35tXL5g=";
-    };
-    "10.2.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-10.2.0/wine-mono-10.2.0-x86.msi";
-      hash = "sha256-Th7T8C6S0FMTPQPd++/PbbSk3CMamu0zZ7FxF6iIR9g=";
-    };
-    "10.1.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-10.1.0/wine-mono-10.1.0-x86.msi";
-      hash = "sha256-yIwkMYkLwyys7I1+pw5Tpa5LlcjFXKbnXvjbDkzPEHA=";
-    };
-    "10.0.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-10.0.0/wine-mono-10.0.0-x86.msi";
-      hash = "";
-    };
-    "9.4.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-9.4.0/wine-mono-9.4.0-x86.msi";
-      hash = "sha256-z2FzrpS3np3hPZp0zbJWCohvw9Jx+Uiayxz9vZYcrLI=";
-    };
-    "9.1.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-9.1.0/wine-mono-9.1.0-x86.msi";
-      hash = "sha256-igoeaDe0lN9Jkn5ddZscaQjom4ovjjrQJeHCiBiCR24=";
-    };
-    "8.0.1" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-8.0.1/wine-mono-8.0.1-x86.msi";
-      hash = "sha256-JyQAhfW0+LF1/wR589bMQwmwCtuzhsALof3dMPA2eXY=";
-    };
-    "7.4.1" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-7.4.1/wine-mono-7.4.1-x86.msi";
-      hash = "sha256-RyHeAH7NABnMGOFEqILCkNozFNfhvHf1fEBGdeZEuf4=";
-    };
-    "7.0.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-7.0.0/wine-mono-7.0.0-x86.msi";
-      hash = "sha256-s35vyeWQ5YIkPcJdcqX8wzDDp5cN/cmKeoHSOEW6iQA=";
-    };
-    "6.3.0" = {
-      url = "https://github.com/wine-mono/wine-mono/releases/download/wine-mono-6.3.0/wine-mono-6.3.0-x86.msi";
-      hash = "sha256-pfAtMqAoNpKkpiX1Qc+7tFGIMShHTFyANiOFMXzQmfA=";
-    };
-  };
-
-  # https://gitlab.winehq.org/wine/wine/-/wikis/Wine-Mono
-  wineMonoVersion =
-    {
-      "11.20" = "11.3.0";
-      "11.10" = "11.1.0";
-      "11.8" = "11.1.0";
-      "11.4" = "11.0.0";
-      "11.3" = "11.0.0";
-      "11.1" = "11.0.0";
-      "11.0" = "11.0.0";
-      "10.19" = "10.3.0";
-      "10.18" = "10.3.0";
-      "10.17" = "10.3.0";
-      "10.16" = "10.2.0";
-      "10.15" = "10.2.0";
-      "10.14" = "10.2.0";
-      "10.12" = "10.1.0";
-      "10.10" = "10.1.0";
-      "10.5" = "10.0.0";
-      "10.0" = "9.4.0";
-      "9.10" = "9.1.0";
-      "8.13" = "8.0.1";
-      "6.22" = "7.0.0";
-      "6.14" = "6.3.0";
-      "Proton8-26" = "8.0.1";
-      "Proton8-25" = null;
-      "Proton8-13" = null;
-      "Proton7-36" = "7.0.0";
-    }
-    .${runtime.version} or null;
+  wineMonoMetadata = builtins.fromJSON (builtins.readFile ./wine-mono.json);
+  wineMonoDownloads = wineMonoMetadata.downloads;
+  wineMonoVersion = wineMonoMetadata.versions.${runtime.version} or null;
 
   needFramebuffer =
     {
@@ -158,13 +76,19 @@ let
     export WINEDLLOVERRIDES="mscoree,mshtml=d''${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
   '';
 
-  wineMonoPatchCommands = lib.optionalString (builtins.elem wineMonoVersion [ "11.1.0" "11.3.0" ]) ''
-    # Wine Mono's MSI link custom actions fail under the Nix build
-    # sandbox with Wine 11.8 and 11.20. The payload and support MSI still install
-    # cleanly without those deduplication/link actions.
-    msibuild ./mono.msi -q "DELETE FROM InstallExecuteSequence WHERE Action = 'CREATELINKS'"
-    msibuild ./mono.msi -q "DELETE FROM InstallExecuteSequence WHERE Action = 'CREATELINKS64'"
-  '';
+  wineMonoPatchCommands =
+    lib.optionalString
+      (builtins.elem wineMonoVersion [
+        "11.1.0"
+        "11.3.0"
+      ])
+      ''
+        # Wine Mono's MSI link custom actions fail under the Nix build
+        # sandbox with Wine 11.8 and 11.20. The payload and support MSI still install
+        # cleanly without those deduplication/link actions.
+        msibuild ./mono.msi -q "DELETE FROM InstallExecuteSequence WHERE Action = 'CREATELINKS'"
+        msibuild ./mono.msi -q "DELETE FROM InstallExecuteSequence WHERE Action = 'CREATELINKS64'"
+      '';
 
   wineBrowserCommands = lib.optionalString hostIntegration ''
     ${coreutils}/bin/timeout --foreground 30s ${session.commands.wine} reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /t REG_SZ /d '${overlayfsLib.hostUrlOpener}/bin/nix-overlayfs-open-url' /f
