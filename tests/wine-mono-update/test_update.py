@@ -68,6 +68,29 @@ class UpdateTests(unittest.TestCase):
         with patch.object(updater.subprocess, "check_output", return_value=tags):
             self.assertEqual(updater.discover_versions(), ["11.0.2", "11.20"])
 
+    def test_default_discovery_checks_existing_catalog(self):
+        catalog = ROOT / "packages/wine-modules/wine-base-env/wine-mono.json"
+        before = catalog.read_text()
+        metadata = json.loads(before)
+        releases = {"11.0": "10.4.1", "11.20": "11.3.0"}
+        tags = "\n".join("sha\trefs/tags/wine-" + version for version in releases)
+        def release(version):
+            mono = releases[version]
+            return mono, "checksum", metadata["downloads"][mono]["url"], "source"
+        def verify(url, checksum):
+            return next(d["hash"] for d in metadata["downloads"].values() if d["url"] == url)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wine-mono.json"
+            path.write_text(before)
+            with patch.object(updater, "METADATA", path), patch(
+                "sys.argv", ["updater", "--check"]
+            ), patch.object(updater.subprocess, "check_output", return_value=tags), patch.object(
+                updater, "release_metadata", side_effect=release
+            ) as fetch, patch.object(updater, "verify_download", side_effect=verify):
+                self.assertEqual(updater.main(), 0)
+            self.assertEqual([call.args[0] for call in fetch.call_args_list], ["11.0", "11.20"])
+            self.assertEqual(path.read_text(), before)
+
     def test_invalid_release_rejected_before_network_access(self):
         with patch.object(updater, "read_url") as fetch:
             with self.assertRaises(ValueError):

@@ -24,6 +24,8 @@ assert pkgs.lib.all (version: checkSelection version metadata.versions.${version
 );
 pkgs.runCommand "wine-mono-update-tests" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   cp -r ${../../scripts} scripts
+  mkdir -p packages/wine-modules/wine-base-env
+  cp ${../../packages/wine-modules/wine-base-env/wine-mono.json} packages/wine-modules/wine-base-env/wine-mono.json
   mkdir -p tests/wine-mono-update
   cp ${./test_update.py} tests/wine-mono-update/test_update.py
   python3 -m unittest discover -s tests/wine-mono-update -v
