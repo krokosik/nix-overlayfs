@@ -144,6 +144,16 @@ and are left alone. Moved files are kept in
 `.nix-overlayfs/shadowed-files` (`moved` or `hides`, kind, path, layer). Delete
 `.nix-overlayfs/shadow-check-sources` to run the check on the next launch.
 
+### Session directories
+
+Each launch mounts its prefix in its own directory, `tmp.*` below
+`$XDG_CACHE_HOME/nix-overlayfs/tmp` (or `$XDG_RUNTIME_DIR/nix-overlayfs` for
+ephemeral runtimes), and removes it when the session ends. A launcher that is
+killed cannot clean up, so every launch records its owner (PID and process
+start time) in `session.owner` and removes the directories of sessions that
+are over: no running owner, no process working inside the directory and
+nothing mounted below it.
+
 ## Headless and ephemeral runtimes
 
 `composeWindowsLayers` can produce a one-shot, non-interactive runtime for CLI

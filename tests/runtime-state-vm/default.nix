@@ -96,5 +96,12 @@ else
           machine.succeed(f"grep -Fq 'Wine builtin DLL' {state}/shadowed/*/drive_c/windows/system32/d3d11.dll")
           machine.succeed("grep -F 'moved 1 file(s)' /tmp/changed.log")
           machine.succeed(f"test -s {state}/shadow-check-sources")
+
+      with subtest("directories of killed sessions are removed on the next launch"):
+          tmpbase = "/home/alice/.cache/nix-overlayfs/tmp"
+          machine.succeed(f"su - alice -c 'mkdir -p {tmpbase}/tmp.killedsession/overlay'")
+          launch("sweep")
+          machine.succeed(f"test ! -e {tmpbase}/tmp.killedsession")
+          machine.succeed(f"test -z \"$(ls -A {tmpbase})\"")
     '';
   }

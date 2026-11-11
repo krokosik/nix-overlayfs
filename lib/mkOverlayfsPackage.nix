@@ -332,6 +332,11 @@ stdenv.mkDerivation {
             ''
         }
 
+        # Mark this session's directory as ours, then remove the directories of
+        # earlier sessions that were killed before they could clean up.
+        ${overlayfsLib.runtimeScripts.sessions}/bin/nix-overlayfs-sessions claim "$tempdir" || exit 1
+        ${overlayfsLib.runtimeScripts.sessions}/bin/nix-overlayfs-sessions sweep "$tmpbase" "$tempdir" || true
+
         ${extraEnvCommands}
 
         state_dir="$appdir/.nix-overlayfs"
@@ -472,12 +477,19 @@ stdenv.mkDerivation {
           exit "$status"
         }
 
+        # Leaves before a session starts; nothing is mounted in $tempdir yet.
+        nix_overlayfs_exit_early() {
+          local status="$1"
+          rm -rf -- "$tempdir"
+          exit "$status"
+        }
+
         ${lib.optionalString hostIntegration ''
           if [ "''${1:-}" = "--nix-overlayfs-open-url" ]; then
             callback_url="''${2:-}"
             if [ -z "$callback_url" ]; then
               echo "Missing URL for --nix-overlayfs-open-url" >&2
-              exit 2
+              nix_overlayfs_exit_early 2
             fi
 
             active_pid=""
@@ -493,7 +505,7 @@ stdenv.mkDerivation {
               && nix_overlayfs_active_session_exists; then
               nix_overlayfs_load_session_env
               ${activeUrlSchemeOpenInvocation}
-              exit $?
+              nix_overlayfs_exit_early $?
             fi
           fi
         ''}

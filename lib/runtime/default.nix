@@ -7,6 +7,7 @@
   coreutils,
   diffutils,
   findutils,
+  gawk,
 }:
 {
   guardPrefixUpdates = writeShellApplication {
@@ -24,5 +25,14 @@
       findutils
     ];
     text = builtins.readFile ./check-shadowed.sh;
+  };
+
+  sessions = writeShellApplication {
+    name = "nix-overlayfs-sessions";
+    runtimeInputs = [
+      coreutils
+      gawk
+    ];
+    text = builtins.readFile ./sessions.sh;
   };
 }
