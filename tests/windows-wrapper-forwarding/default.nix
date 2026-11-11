@@ -14,7 +14,8 @@ pkgs.stdenvNoCC.mkDerivation {
 
     grep -F 'extraPostLaunchCommands ? ""' "$mk_windows_package"
     grep -F 'inherit extraPostLaunchCommands;' "$mk_windows_package"
-    grep -F 'basePackage/. ./wineprefix/' "$mk_windows_package"
+    # Layers are copied as directories (with dotfiles), not with a glob.
+    grep -F '}"/. ./wineprefix/' "$mk_windows_package"
     grep -F 'find ./data -mindepth 1 -maxdepth 1' "$mk_windows_package"
     grep -F 'find ./prefix -mindepth 1 -maxdepth 1' "$base_env"
 

@@ -148,7 +148,18 @@ let
         fi
   '';
 
-  deps = builtins.map (x: "\"" + x + "\"") overlayDependenciesPlusEnv;
+  # The installation builds on its dependencies' layers, not on their
+  # launchers: a package made by mkWindowsPackage exposes its layer as
+  # passthru.basePackage (the same path its launcher links as basePackage).
+  # Referring to the launcher would rebuild every dependent installation
+  # whenever only launcher scripts change.
+  layerRoot =
+    dependency:
+    if dependency ? basePackage && lib.isDerivation dependency.basePackage then
+      "${dependency.basePackage}"
+    else
+      "${dependency}/basePackage";
+  deps = builtins.map (x: "\"" + layerRoot x + "\"") overlayDependenciesPlusEnv;
 
   buildSession = runtime.mkSession {
     phase = "build";
@@ -326,12 +337,12 @@ let
 
           deps=(${lib.strings.concatStringsSep " " deps});
 
-          cp "''${deps[0]}/basePackage/system.json" "''${deps[0]}/basePackage/user.json" "''${deps[0]}/basePackage/userdef.json" ./
+          cp "''${deps[0]}/system.json" "''${deps[0]}/user.json" "''${deps[0]}/userdef.json" ./
 
           for i in ''${!deps[@]}; do
             if [[ $i != 0 ]]; then
               for file in system.json user.json userdef.json; do
-                basepath="''${deps[$i]}/basePackage/$file"
+                basepath="''${deps[$i]}/$file"
                 if [ -e "$basepath" ]; then
                   jq -s '${jqRegMerge}' $file "$basepath" | sponge $file || true
                 fi
@@ -340,7 +351,7 @@ let
             # Copy the directory itself so Wine control files such as
             # .update-timestamp survive composition. A trailing glob silently
             # drops dotfiles and makes Wine rerun Wow64Install on every layer.
-            cp --recursive "''${deps[$i]}"/basePackage/. ./wineprefix/
+            cp --recursive "''${deps[$i]}"/. ./wineprefix/
             chmod --recursive +rw ./wineprefix
           done
 

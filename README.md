@@ -250,6 +250,13 @@ directory contents rather than using a `*` glob. Wine's generated
 layers deliberately omit that runtime-owned control file while retaining any
 other hidden files created by their installers.
 
+An installation built with `mkWindowsPackage` starts from its dependencies'
+layers: for a dependency that is itself a package (it has
+`passthru.basePackage`), that layer derivation, not the launcher around it.
+Changes that only affect launchers (environment, DLL overrides, URL handling,
+the launcher scripts of this library) therefore do not rebuild dependent
+installations.
+
 ## DLL overrides
 
 Layers and packages declare Wine DLL load-order overrides as data instead of a
