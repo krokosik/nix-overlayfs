@@ -13,6 +13,7 @@ in
 pkgs.lib.makeScope newScope (
   self: with self; {
     scripts = callPackage ./scripts { };
+    runtimeScripts = callPackage ./runtime { };
     hostUrlOpener = callPackage ./host-url-opener.nix { };
     hostStartShim = callPackage ./host-start-shim.nix { };
     urlSchemeDiscoverers = callPackage ./url-scheme-discoverers.nix { };

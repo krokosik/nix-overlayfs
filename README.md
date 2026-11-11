@@ -99,6 +99,29 @@ processes exit, which can include the browser's lifetime. This service mode need
 systemd 250 or newer; if the service cannot be started, the URL opener uses its
 existing detached-process fallback.
 
+## Persistent runtime state
+
+A persistent runtime keeps its writable layer in
+`$XDG_DATA_HOME/<packageName>` (by default `~/.local/share/<packageName>`),
+mounted above the read-only Nix layers. Files in the writable layer always win,
+so the launcher guards against changes that would hide newer Nix layers after
+a rebuild.
+
+### Wine prefix updates
+
+Wine updates a prefix (wineboot's `PreInstall`, `DefaultInstall` and
+`Wow64Install`) when `.update-timestamp` is missing or does not match its
+`wine.inf`. In a layered prefix that update rewrites every builtin DLL into the
+writable layer, where the copies then hide the Nix layers for good, including
+native DLLs such as DXVK's `d3d11.dll`. Before mounting, the launcher therefore
+writes `disable` into the writable layer's `.update-timestamp`, which wineboot
+honours (`programs/wineboot/wineboot.c`, `update_timestamp()`). Prefix contents
+come from the Nix layers; a Wine change that needs new prefix contents belongs
+in a rebuilt base environment.
+
+Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore Wine's default behaviour
+for a launch; the launcher then removes its marker again.
+
 ## Headless and ephemeral runtimes
 
 `composeWindowsLayers` can produce a one-shot, non-interactive runtime for CLI

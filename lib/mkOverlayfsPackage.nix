@@ -643,6 +643,9 @@ stdenv.mkDerivation {
 
           nix_overlayfs_prepare_upperdir_skeleton
 
+          # Keep Wine from copying its builtins over the Nix layers.
+          ${overlayfsLib.runtimeScripts.guardPrefixUpdates}/bin/nix-overlayfs-guard-prefix-updates "$appdir"
+
           rm -rf "$overlay_workdir"
           mkdir -p "$overlay_workdir"
           ${lib.optionalString hostIntegration ''
