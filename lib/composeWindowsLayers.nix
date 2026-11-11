@@ -22,6 +22,7 @@
   processTerminationTimeout ? 5,
   stateMode ? "persistent",
   runtimeEnvVars ? { },
+  dllOverrides ? { },
   urlSchemes ? [ ],
   urlSchemeDiscoveryCommands ? "",
   urlSchemeOpenCommands ? "",
@@ -63,6 +64,11 @@ let
   allRuntimeEnvVars = lib.mergeAttrsList (
     (builtins.map (layer: layer.runtimeEnvVars) allLayers) ++ [ runtimeEnvVars ]
   );
+  # Merged per module instead of one layer's WINEDLLOVERRIDES replacing another's.
+  allDllOverrides = overlayfsLib.dllOverrides.combine {
+    layers = baseEnv ++ allLayers;
+    package = { inherit dllOverrides runtimeEnvVars; };
+  };
   session = runtime.mkSession {
     phase = "launch";
     sessionRoot = "$tempdir/runtime-session";
@@ -127,7 +133,13 @@ mkOverlayfsPackage {
   extraEnvCommands = ''
     export WINEDEBUG="''${WINEDEBUG:-${winedbg}}"
   ''
-  + builtins.concatStringsSep "\n" (lib.mapAttrsToList (n: v: "export ${n}='${v}'") allRuntimeEnvVars)
+  + builtins.concatStringsSep "\n" (
+    lib.mapAttrsToList (n: v: "export ${n}='${v}'") (
+      overlayfsLib.dllOverrides.withoutOverrides allRuntimeEnvVars
+    )
+  )
+  + "\n"
+  + overlayfsLib.dllOverrides.exportCommand allDllOverrides
   + lib.optionalString (managedRuntime == "disabled") ''
 
     export WINEDLLOVERRIDES="mscoree,mshtml=d''${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"

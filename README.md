@@ -208,6 +208,37 @@ directory contents rather than using a `*` glob. Wine's generated
 layers deliberately omit that runtime-owned control file while retaining any
 other hidden files created by their installers.
 
+## DLL overrides
+
+Layers and packages declare Wine DLL load-order overrides as data instead of a
+`WINEDLLOVERRIDES` string:
+
+```nix
+overlayfsLib.mkWindowsPackage {
+  # ...
+  dllOverrides = {
+    d3d11 = "n";          # native
+    d3dcompiler_47 = "n,b";
+    msquic = "";          # disabled
+  };
+}
+```
+
+`mkWindowsPackage`, `mkWinpkgsPackage` and `composeWindowsLayers` accept
+`dllOverrides`. A launcher merges the overrides of all its layers per module
+and adds its own, which win. Two layers that disagree about a module fail
+evaluation unless the package sets that module itself. Names and orders are
+normalized as Wine reads them: case-insensitive, without `.dll`, and only the
+first letter of each order entry counts (`native,builtin` is `n,b`; `d` and
+`disabled` are `""`).
+
+A `WINEDLLOVERRIDES` in `runtimeEnvVars` is still accepted and merged the same
+way, so layers using it no longer replace each other's overrides. A
+`WINEDLLOVERRIDES` set by the user at launch is appended after the packaged
+overrides, so the user's entries win (Wine lets a later entry for the same
+module replace an earlier one). The helpers are available as
+`overlayfsLib.dllOverrides` (`parse`, `normalize`, `combine`, `render`).
+
 ## Migrating from `composeWineLayers`
 
 The old `composeWineLayers` entrypoint has been replaced by

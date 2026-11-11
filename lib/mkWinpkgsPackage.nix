@@ -23,6 +23,7 @@
   processTerminationTimeout ? 5,
   wineserverWaitTimeout ? null,
   runtimeEnvVars ? { },
+  dllOverrides ? { },
   ...
 }:
 let
@@ -102,5 +103,6 @@ mkWindowsPackage {
     processTerminationTimeout
     wineserverWaitTimeout
     runtimeEnvVars
+    dllOverrides
     ;
 }

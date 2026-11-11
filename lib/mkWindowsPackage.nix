@@ -51,6 +51,7 @@
   stateMode ? "persistent",
   wineserverWaitTimeout ? null,
   runtimeEnvVars ? { },
+  dllOverrides ? { },
   urlSchemes ? [ ],
   urlSchemeDiscoveryCommands ? "",
   urlSchemeOpenCommands ? "",
@@ -473,12 +474,25 @@ mkOverlayfsPackage {
   extraEnvCommands = ''
     export WINEDEBUG="${winedbg}"
   ''
-  + builtins.concatStringsSep "\n" (lib.mapAttrsToList (n: v: "export ${n}='${v}'") runtimeEnvVars)
+  + builtins.concatStringsSep "\n" (
+    lib.mapAttrsToList (n: v: "export ${n}='${v}'") (
+      overlayfsLib.dllOverrides.withoutOverrides runtimeEnvVars
+    )
+  )
+  + "\n"
+  + overlayfsLib.dllOverrides.exportCommand (
+    overlayfsLib.dllOverrides.combine {
+      layers = overlayDependenciesPlusEnv;
+      package = { inherit dllOverrides runtimeEnvVars; };
+    }
+  )
   + lib.optionalString (managedRuntime == "disabled") ''
 
     export WINEDLLOVERRIDES="mscoree,mshtml=d''${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
   '';
   passthru = {
     inherit managedRuntime runtime runtimeEnvVars;
+    # This package's own overrides, for packages that use it as a layer.
+    dllOverrides = overlayfsLib.dllOverrides.fromLayer { inherit dllOverrides runtimeEnvVars; };
   };
 }

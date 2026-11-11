@@ -34,7 +34,5 @@ overlayfsLib.mkWindowsPackage {
     (map (x: installPath32 + "/" + x) dllsToInstall)
     ++ lib.optionals (runtime.windowsArch == "wow64") (map (x: installPath64 + "/" + x) dllsToInstall);
   inherit packageName;
-  runtimeEnvVars = {
-    WINEDLLOVERRIDES = "d3d8,d3d9,d3d10core,d3d11,dxgi=n";
-  };
+  dllOverrides = lib.genAttrs (map (lib.removeSuffix ".dll") dllsToInstall) (_: "n");
 }
