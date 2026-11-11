@@ -122,6 +122,28 @@ in a rebuilt base environment.
 Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore Wine's default behaviour
 for a launch; the launcher then removes its marker again.
 
+### Files hiding the Nix layers
+
+Whenever the set of Nix layers changes (and on the first launch with this
+check), the launcher compares the writable layer's `drive_c/windows` with the
+layers below before mounting. A file that differs from the file it hides is
+handled according to `NIX_OVERLAYFS_SHADOWED_FILES`:
+
+- `prune-builtin` (default): Wine builtin modules (winebuild's
+  `Wine builtin DLL` signature at offset 0x40), typically left by an earlier
+  prefix update, are moved aside; other files are kept and reported.
+- `prune`: every hiding file is moved aside.
+- `warn`: only report.
+- `ignore`: skip the check.
+
+Files identical to the layer below are removed in both prune modes, since they
+would hide the next change of that layer. Files in directories that were
+deleted and recreated in the writable layer (opaque directories) hide nothing
+and are left alone. Moved files are kept in
+`<writable layer>/.nix-overlayfs/shadowed/<time>/`, and the latest report is
+`.nix-overlayfs/shadowed-files` (`moved` or `hides`, kind, path, layer). Delete
+`.nix-overlayfs/shadow-check-sources` to run the check on the next launch.
+
 ## Headless and ephemeral runtimes
 
 `composeWindowsLayers` can produce a one-shot, non-interactive runtime for CLI

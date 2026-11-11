@@ -646,6 +646,18 @@ stdenv.mkDerivation {
           # Keep Wine from copying its builtins over the Nix layers.
           ${overlayfsLib.runtimeScripts.guardPrefixUpdates}/bin/nix-overlayfs-guard-prefix-updates "$appdir"
 
+          # Whenever the Nix layers change, look for writable files hiding them.
+          nix_overlayfs_shadow_signature="$state_dir/shadow-check-sources"
+          if ! cmp -s "$nix_overlayfs_shadow_signature" "$nix_overlayfs_registry_signature_next"; then
+            IFS=: read -r -a nix_overlayfs_shadow_lowerdirs <<< "$lowerdirs"
+            if ${overlayfsLib.runtimeScripts.checkShadowed}/bin/nix-overlayfs-check-shadowed \
+              "$appdir" "$state_dir" "''${nix_overlayfs_shadow_lowerdirs[@]}"; then
+              cp -f "$nix_overlayfs_registry_signature_next" "$nix_overlayfs_shadow_signature"
+            else
+              echo "warning: nix-overlayfs: checking the writable layer for hidden files failed" >&2
+            fi
+          fi
+
           rm -rf "$overlay_workdir"
           mkdir -p "$overlay_workdir"
           ${lib.optionalString hostIntegration ''
