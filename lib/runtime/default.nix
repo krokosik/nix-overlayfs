@@ -8,6 +8,7 @@
   diffutils,
   findutils,
   gawk,
+  gnugrep,
 }:
 {
   guardPrefixUpdates = writeShellApplication {
@@ -34,5 +35,16 @@
       gawk
     ];
     text = builtins.readFile ./sessions.sh;
+  };
+
+  forgetDesktopEntry = writeShellApplication {
+    name = "nix-overlayfs-forget-desktop-entry";
+    runtimeInputs = [
+      coreutils
+      diffutils
+      gawk
+      gnugrep
+    ];
+    text = builtins.readFile ./forget-desktop-entry.sh;
   };
 }

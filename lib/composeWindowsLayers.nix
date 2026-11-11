@@ -17,6 +17,7 @@
   extraPreLaunchCommands ? "",
   extraPostLaunchCommands ? "",
   hostIntegration ? true,
+  registerHostUrlHandlers ? true,
   managedRuntime ? "auto",
   namespaceMode ? "auto",
   processTerminationTimeout ? 5,
@@ -116,6 +117,7 @@ mkOverlayfsPackage {
     workingDirectory
     entrypointWrapper
     hostIntegration
+    registerHostUrlHandlers
     namespaceMode
     processTerminationTimeout
     session

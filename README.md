@@ -154,6 +154,38 @@ start time) in `session.owner` and removes the directories of sessions that
 are over: no running owner, no process working inside the directory and
 nothing mounted below it.
 
+## URL schemes
+
+A package's `urlSchemes` (plus anything `urlSchemeDiscoveryCommands` prints)
+are registered in two places at every launch:
+
+- in the Wine prefix (`HKCU\Software\Classes\<scheme>`), so Windows programs
+  can open them;
+- on the host, unless `registerHostUrlHandlers = false`: a hidden
+  `<executableName>-nix-overlayfs-url-handler.desktop` in
+  `$XDG_DATA_HOME/applications`, made the user's default with `xdg-mime`.
+
+The host handler calls the launcher with `--nix-overlayfs-open-url URL`. If a
+session of the package is running, the URL is handed to it
+(`urlSchemeOpenCommands`); otherwise the application starts with the URL.
+`--nix-overlayfs-forward-url URL` only hands the URL to a running session and
+exits with status 3 when there is none, without starting anything; a
+dispatcher can use it to find the right application when several share a
+scheme.
+
+Set `registerHostUrlHandlers = false` (accepted by `mkOverlayfsPackage`,
+`composeWindowsLayers`, `mkWindowsPackage` and `mkWinpkgsPackage`) when the
+host declares the handler itself, for example a NixOS or home-manager module
+with a `.desktop` file and `xdg.mime.defaultApplications`. Otherwise the
+launcher's per-user default (in `~/.config/mimeapps.list`) takes precedence
+over the system's. With the option off, a launch also removes the handler
+entries earlier launches of the same state directory wrote, under any
+executable name, and their defaults in the user's `mimeapps.list` files
+(symlinked lists, such as home-manager's, are left alone).
+
+The generated `open-url` script calls the package that wrote it and, once that
+store path was garbage collected, the launcher of the same name on `PATH`.
+
 ## Headless and ephemeral runtimes
 
 `composeWindowsLayers` can produce a one-shot, non-interactive runtime for CLI

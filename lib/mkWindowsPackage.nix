@@ -45,6 +45,7 @@
   # Materialized builds avoid overlayfs EXDEV when Wine renames reparse directories.
   portableReparsePoints ? false,
   hostIntegration ? true,
+  registerHostUrlHandlers ? true,
   managedRuntime ? "auto",
   namespaceMode ? "auto",
   processTerminationTimeout ? 5,
@@ -455,6 +456,7 @@ mkOverlayfsPackage {
     executableName
     executablePath
     hostIntegration
+    registerHostUrlHandlers
     namespaceMode
     processTerminationTimeout
     stateMode

@@ -18,6 +18,10 @@
   session ? null,
   basePackageName ? basePackage.pname,
   hostIntegration ? true,
+  # Write a URL handler .desktop file and make it the user's default for the
+  # package's URL schemes at every launch. Packages whose host already declares
+  # the handler (a NixOS or home-manager module) set this to false.
+  registerHostUrlHandlers ? true,
   namespaceMode ? "auto",
   processTerminationTimeout ? 5,
   stateMode ? "persistent",
@@ -107,6 +111,31 @@ stdenv.mkDerivation {
               '
         }
 
+        # Removes URL handler entries this state directory wrote earlier, under
+        # this or an older executable name, except the one named in $1.
+        nix_overlayfs_remove_url_handlers() {
+          local keep="$1"
+          local applications_dir="$XDG_DATA_HOME/applications"
+          local desktop=""
+          local -a removed=()
+
+          for desktop in "$applications_dir"/*-nix-overlayfs-url-handler.desktop; do
+            [ -f "$desktop" ] || continue
+            [ "$desktop" != "$keep" ] || continue
+            ${pkgs.gnugrep}/bin/grep -qxF "Exec=$state_dir/open-url %u" "$desktop" || continue
+            rm -f -- "$desktop"
+            removed+=("''${desktop##*/}")
+          done
+          [ "''${#removed[@]}" -gt 0 ] || return 0
+
+          for desktop in "''${removed[@]}"; do
+            ${overlayfsLib.runtimeScripts.forgetDesktopEntry}/bin/nix-overlayfs-forget-desktop-entry "$desktop" \
+              "''${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list" \
+              "$applications_dir/mimeapps.list" || true
+          done
+          ${pkgs.desktop-file-utils}/bin/update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
+        }
+
         nix_overlayfs_register_url_handlers() {
           local applications_dir="$XDG_DATA_HOME/applications"
           local desktop_file="$applications_dir/${desktopId}"
@@ -115,15 +144,33 @@ stdenv.mkDerivation {
           local existing_default=""
           local scheme=""
 
-          mkdir -p "$applications_dir"
           nix_overlayfs_url_schemes_file="$state_dir/url-schemes"
           nix_overlayfs_discover_url_schemes > "$nix_overlayfs_url_schemes_file"
 
-          [ -s "$nix_overlayfs_url_schemes_file" ] || return 0
+          ${
+            if registerHostUrlHandlers then
+              ''
+                nix_overlayfs_remove_url_handlers "$desktop_file"
+              ''
+            else
+              ''
+                # The host declares the handler; drop what earlier launches wrote.
+                nix_overlayfs_remove_url_handlers ""
+                rm -f -- "$handler_script"
+                return 0
+              ''
+          }
 
+          [ -s "$nix_overlayfs_url_schemes_file" ] || return 0
+          mkdir -p "$applications_dir"
+
+          # Prefer this package; after it was garbage collected, use the
+          # installed launcher of the same name.
           printf '%s\n' \
             '#!${pkgs.bash}/bin/bash' \
-            'exec __STOREPATH__/bin/${executableName} --nix-overlayfs-open-url "$@"' \
+            'launcher=__STOREPATH__/bin/${executableName}' \
+            '[ -x "$launcher" ] || launcher="$(command -v ${executableName})" || exit 127' \
+            'exec "$launcher" --nix-overlayfs-open-url "$@"' \
             > "$handler_script"
           chmod 755 "$handler_script"
 
@@ -485,13 +532,7 @@ stdenv.mkDerivation {
         }
 
         ${lib.optionalString hostIntegration ''
-          if [ "''${1:-}" = "--nix-overlayfs-open-url" ]; then
-            callback_url="''${2:-}"
-            if [ -z "$callback_url" ]; then
-              echo "Missing URL for --nix-overlayfs-open-url" >&2
-              nix_overlayfs_exit_early 2
-            fi
-
+          nix_overlayfs_running_session() {
             active_pid=""
             active_overlay=""
             if [ -f "$state_dir/session.pid" ] && [ -f "$state_dir/overlay-root" ]; then
@@ -499,15 +540,33 @@ stdenv.mkDerivation {
               active_overlay="$(cat "$state_dir/overlay-root" 2>/dev/null || true)"
             fi
 
-            if [ -n "$active_pid" ] \
+            [ -n "$active_pid" ] \
               && [ -n "$active_overlay" ] \
               && [ -d "$active_overlay" ] \
-              && nix_overlayfs_active_session_exists; then
-              nix_overlayfs_load_session_env
-              ${activeUrlSchemeOpenInvocation}
-              nix_overlayfs_exit_early $?
-            fi
-          fi
+              && nix_overlayfs_active_session_exists
+          }
+
+          case "''${1:-}" in
+            --nix-overlayfs-open-url|--nix-overlayfs-forward-url)
+              callback_url="''${2:-}"
+              if [ -z "$callback_url" ]; then
+                echo "Missing URL for $1" >&2
+                nix_overlayfs_exit_early 2
+              fi
+
+              if nix_overlayfs_running_session; then
+                nix_overlayfs_load_session_env
+                ${activeUrlSchemeOpenInvocation}
+                nix_overlayfs_exit_early $?
+              fi
+
+              # Forward only: report that no session runs instead of starting one,
+              # so a dispatcher can try the next application.
+              if [ "$1" = --nix-overlayfs-forward-url ]; then
+                nix_overlayfs_exit_early 3
+              fi
+              ;;
+          esac
         ''}
 
         mkdir --parents "$appdir" "$tempdir/bind" "$tempdir/overlay" || exit 1

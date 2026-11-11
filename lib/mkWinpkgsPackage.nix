@@ -24,6 +24,7 @@
   wineserverWaitTimeout ? null,
   runtimeEnvVars ? { },
   dllOverrides ? { },
+  registerHostUrlHandlers ? true,
   ...
 }:
 let
@@ -104,5 +105,6 @@ mkWindowsPackage {
     wineserverWaitTimeout
     runtimeEnvVars
     dllOverrides
+    registerHostUrlHandlers
     ;
 }

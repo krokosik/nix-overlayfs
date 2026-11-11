@@ -137,6 +137,22 @@ else
       urlSchemes = [ "probe" ];
     };
 
+    # The host (for example a NixOS module) declares this package's handler.
+    quietPackage = overlayfsLib.composeWindowsLayers {
+      inherit (modules) runtime;
+      baseLayer = {
+        inherit basePackage;
+        overlayDependencies = [ ];
+        runtimeEnvVars = { };
+      };
+      packageName = "url-broker-vm-quiet";
+      executableName = "url-broker-vm-quiet";
+      executablePath = "/drive_c/url-probe/url-probe.exe";
+      workingDirectory = "/drive_c/url-probe";
+      urlSchemes = [ "quietprobe" ];
+      registerHostUrlHandlers = false;
+    };
+
     fakeBrowser = pkgs.writeShellScriptBin "nix-overlayfs-vm-browser" ''
       set -eu
 
@@ -213,10 +229,47 @@ else
       )
       machine.succeed("cmp /tmp/nix-overlayfs-cold-session.pid /home/alice/.local/share/url-broker-vm/.nix-overlayfs/session.pid")
       machine.succeed("cmp /tmp/nix-overlayfs-cold-overlay-root /home/alice/.local/share/url-broker-vm/.nix-overlayfs/overlay-root")
+
+      # Forward only, with the session running: the URL reaches it.
+      machine.succeed("su - alice -c 'export XDG_DATA_HOME=$HOME/.local/share XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache NIX_OVERLAYFS_NAMESPACE_MODE=direct; ${probePackage}/bin/url-broker-vm --nix-overlayfs-forward-url probe://forwarded?state=running'")
+      machine.succeed(
+          "timeout 60 bash -c \"until grep -Fxq 'probe://forwarded?state=running' /tmp/nix-overlayfs-return-url 2>/dev/null; do sleep 0.25; done\" || "
+          "{ echo RETURN_URL; cat /tmp/nix-overlayfs-return-url || true; false; }"
+      )
+      machine.succeed("cmp /tmp/nix-overlayfs-cold-session.pid /home/alice/.local/share/url-broker-vm/.nix-overlayfs/session.pid")
+
       machine.succeed(
           "timeout 60 bash -c 'pid=$(cat /tmp/nix-overlayfs-cold-session.pid); while kill -0 \"$pid\" 2>/dev/null; do sleep 0.25; done' || "
           "{ echo COLD_START_LOG; cat /tmp/nix-overlayfs-cold-start.log || true; false; }"
       )
+
+      # Forward only, without a session: status 3 and nothing starts.
+      status = machine.execute("su - alice -c 'export XDG_DATA_HOME=$HOME/.local/share XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache NIX_OVERLAYFS_NAMESPACE_MODE=direct; timeout 30 ${probePackage}/bin/url-broker-vm --nix-overlayfs-forward-url probe://forwarded?state=nobody'")[0]
+      assert status == 3, f"forwarding without a session exited with {status}, expected 3"
+      machine.sleep(5)
+      machine.succeed("! grep -F 'state=nobody' /tmp/nix-overlayfs-return-url")
+      machine.succeed("! findmnt -rn -t fuse.fuse-overlayfs")
+
+      # A package with registerHostUrlHandlers = false writes no handler and
+      # removes the ones earlier launches of it wrote.
+      machine.succeed(
+          "su - alice -c '"
+          "mkdir -p $HOME/.local/share/url-broker-vm-quiet/.nix-overlayfs; "
+          "printf \"%s\\n\" \"[Desktop Entry]\" \"Type=Application\" \"Exec=$HOME/.local/share/url-broker-vm-quiet/.nix-overlayfs/open-url %u\" \"MimeType=x-scheme-handler/quietprobe;\" "
+          "> $HOME/.local/share/applications/old-name-nix-overlayfs-url-handler.desktop; "
+          "printf \"%s\\n\" \"[Default Applications]\" \"x-scheme-handler/quietprobe=old-name-nix-overlayfs-url-handler.desktop\" \"x-scheme-handler/https=nix-overlayfs-vm-browser.desktop\" "
+          "> $HOME/.config/mimeapps.list'"
+      )
+      machine.succeed("su - alice -c 'export XDG_DATA_HOME=$HOME/.local/share XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache NIX_OVERLAYFS_NAMESPACE_MODE=direct; timeout 120 ${quietPackage}/bin/url-broker-vm-quiet quiet-run' > /tmp/nix-overlayfs-quiet.log 2>&1")
+      machine.succeed("grep -Fx quiet-run /tmp/nix-overlayfs-return-url")
+      machine.succeed("test ! -e /home/alice/.local/share/applications/old-name-nix-overlayfs-url-handler.desktop")
+      machine.succeed("test ! -e /home/alice/.local/share/applications/url-broker-vm-quiet-nix-overlayfs-url-handler.desktop")
+      machine.succeed("test ! -e /home/alice/.local/share/url-broker-vm-quiet/.nix-overlayfs/open-url")
+      machine.succeed("! grep -F quietprobe /home/alice/.config/mimeapps.list")
+      machine.succeed("grep -Fx 'x-scheme-handler/https=nix-overlayfs-vm-browser.desktop' /home/alice/.config/mimeapps.list")
+      # Wine's own registration of the scheme stays.
+      machine.succeed("awk 'index($0, \"Classes\") && index($0, \"quietprobe]\") && substr($0, 1, 1) == \"[\" { found = 1 } END { exit !found }' /home/alice/.local/share/url-broker-vm-quiet/user.reg")
+      machine.succeed("rm -f /tmp/nix-overlayfs-return-url")
 
       machine.succeed("rm -f /tmp/nix-overlayfs-browser-url /tmp/nix-overlayfs-return-url /tmp/nix-overlayfs-probe-started /tmp/nix-overlayfs-url-broker.log")
       machine.succeed("su - alice -c 'export XDG_DATA_HOME=$HOME/.local/share XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache; nohup ${probePackage}/bin/url-broker-vm > /tmp/nix-overlayfs-url-broker.log 2>&1 &'")
