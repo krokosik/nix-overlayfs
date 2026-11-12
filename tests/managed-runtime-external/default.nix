@@ -33,7 +33,33 @@ let
       unshareInstall = _: "true";
     };
   evaluates = package: (builtins.tryEval (builtins.deepSeq package.drvPath true)).success;
+
+  # Using such a package elsewhere carries the requirement along, also
+  # through a hand-made layer that only lists it as a dependency.
+  consumer =
+    managedRuntime: dependency:
+    modules.overlayfsLib.mkWindowsPackage {
+      inherit (modules) runtime;
+      inherit managedRuntime;
+      pname = "dotnet-consumer";
+      version = "1.0.0";
+      packageName = "dotnet-consumer";
+      src = pkgs.emptyFile;
+      overlayDependencies = [ dependency ];
+      unshareInstall = _: "true";
+    };
+  wrapper = pkgs.runCommand "external-wrapper-layer" {
+    passthru = {
+      runtimeEnvVars = { };
+      overlayDependencies = [ (dotnetUser "external") ];
+    };
+  } "mkdir -p $out/basePackage";
 in
+assert (dotnetUser "external").requiredManagedRuntime == "external";
+assert evaluates (consumer "external" (dotnetUser "external"));
+assert !(evaluates (consumer "auto" (dotnetUser "external")));
+assert !(evaluates (consumer "auto" wrapper));
+assert evaluates (consumer "external" wrapper);
 assert modules.base-env-external-managed-runtime.wine-mono == null;
 assert modules.base-env-external-managed-runtime-no-host-integration.wine-mono == null;
 assert modules.dotnet-framework-4-8.managedRuntime == "external";
