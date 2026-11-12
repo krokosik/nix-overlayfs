@@ -114,10 +114,12 @@ Wine updates a prefix (wineboot's `PreInstall`, `DefaultInstall` and
 `wine.inf`. In a layered prefix that update rewrites every builtin DLL into the
 writable layer, where the copies then hide the Nix layers for good, including
 native DLLs such as DXVK's `d3d11.dll`. Before mounting, the launcher therefore
-writes `disable` into the writable layer's `.update-timestamp`, which wineboot
-honours (`programs/wineboot/wineboot.c`, `update_timestamp()`). Prefix contents
-come from the Nix layers; a Wine change that needs new prefix contents belongs
-in a rebuilt base environment.
+writes `disable` into the writable layer's `.update-timestamp`, which stops
+wineboot's automatic update (`programs/wineboot/wineboot.c`,
+`update_timestamp()`). It does not stop an explicit `wineboot -u` or a program
+that runs `wine.inf`'s sections itself. Prefix contents come from the Nix
+layers; a Wine change that needs new prefix contents belongs in a rebuilt
+base environment.
 
 Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore Wine's default behaviour
 for a launch; the launcher then removes its marker again.
@@ -293,14 +295,20 @@ overlayfsLib.mkWindowsPackage {
 }
 ```
 
-This works because Wine loads a builtin module from its own installation
-when the file in the prefix is a builtin copy (`load_builtin()` in
-`dlls/ntdll/unix/loader.c`: builtin first, the prefix file as fallback), and
-because the launcher keeps Wine from updating the prefix at runtime. Changes
-that only `wine.inf` makes to a prefix (new registry keys, new files) do
-not reach the layers until `runtime` itself changes. Both runtimes must
-therefore be builds of the same Wine release (`upstreamVersion`) for the same
-Windows architecture; otherwise evaluation fails.
+Wine loads a builtin module from its own installation when the file in the
+prefix is a builtin copy (`load_builtin()` in `dlls/ntdll/unix/loader.c`:
+builtin first, the prefix file as fallback), and the launcher keeps wineboot
+from updating the prefix automatically. So code changes in the launch Wine's
+existing modules take effect. Prefix contents do not change: registry keys and
+files that only `wine.inf` creates, modules the launch Wine adds (not in the
+prefix) or removes (the old prefix copy is used, or nothing for a fake DLL).
+The two Wines must therefore produce the same prefix, which this library
+cannot determine. It compares the runtimes' `prefixCompatibility` (the Wine
+package's `passthru.prefixCompatibility`, or else its upstream release) and
+Windows architecture, and fails evaluation if they differ. A Wine package that
+declares `prefixCompatibility` vouches that builds sharing the value differ
+only in code; for anything else, rebuild the layers with that Wine
+(`runtime`).
 
 ## DLL overrides
 

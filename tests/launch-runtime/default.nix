@@ -54,6 +54,16 @@ let
     version = "11.21-1";
     upstreamVersion = "11.21";
   };
+  # Same release, but declared to change the prefix (e.g. a wine.inf patch).
+  prefixChanging =
+    fakeRuntime {
+      name = "prefix-changing";
+      version = "11.20-1";
+      upstreamVersion = "11.20";
+    }
+    // {
+      prefixCompatibility = "11.20+changed-wine-inf";
+    };
   win32 = fakeRuntime {
     name = "win32";
     version = "11.20-1";
@@ -105,6 +115,7 @@ assert (composed candidate).launchProgram == "${candidate.toolsPackage}/bin/wine
 # Another Wine release or architecture is refused.
 assert !(evaluates (package { launchRuntime = newer; }));
 assert !(evaluates (package { launchRuntime = win32; }));
+assert !(evaluates (package { launchRuntime = prefixChanging; }));
 assert !(evaluates (composed newer));
 pkgs.runCommand "launch-runtime-test" { } ''
   touch "$out"
