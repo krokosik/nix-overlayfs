@@ -25,6 +25,9 @@ in
   # A layer built for one kind of base environment does not fit another: the
   # .NET Framework layer removes Wine Mono's files, which only works if the
   # base environment never had them.
+  # Every layer in the closure of `layers` counts: a package built on the
+  # external base (which says so with requiredManagedRuntime) stays tied to it
+  # when another package uses it, directly or through other layers.
   checkLayers =
     {
       managedRuntime,
@@ -32,9 +35,10 @@ in
       packageName,
     }:
     let
+      closure = layer: [ layer ] ++ lib.concatMap closure (layer.overlayDependencies or [ ]);
       mismatched = lib.filter (
-        layer: (layer.requiredManagedRuntime or managedRuntime) != managedRuntime
-      ) layers;
+        layer: (layer.requiredManagedRuntime or null) != null && layer.requiredManagedRuntime != managedRuntime
+      ) (lib.concatMap closure layers);
       describe = layer: "${layer.name or "a layer"} (needs \"${layer.requiredManagedRuntime}\")";
     in
     if mismatched == [ ] then

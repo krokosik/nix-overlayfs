@@ -514,6 +514,8 @@ mkOverlayfsPackage {
       launchRuntime
       runtimeEnvVars
       ;
+    # Built on a base without Wine Mono, this layer only fits such a base.
+    requiredManagedRuntime = if managedRuntime == "external" then "external" else null;
     # This package's own overrides, for packages that use it as a layer.
     dllOverrides = overlayfsLib.dllOverrides.fromLayer { inherit dllOverrides runtimeEnvVars; };
   };

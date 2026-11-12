@@ -220,11 +220,13 @@ removes it after the command exits.
 
 `managedRuntime = "external"` uses a base environment without Wine Mono but
 leaves `mscoree` enabled, for prefixes that get .NET from a layer such as
-`dotnet-framework-4-8`. That layer is built this way and declares
-`passthru.requiredManagedRuntime = "external"`; `mkWindowsPackage` and
-`composeWindowsLayers` refuse to put such a layer on a base environment of
-another kind, since its removal of Wine Mono only works on a base that never
-had it.
+`dotnet-framework-4-8`. That layer, and every package built with
+`managedRuntime = "external"`, declares `passthru.requiredManagedRuntime =
+"external"`; `mkWindowsPackage` and `composeWindowsLayers` refuse a layer with
+that requirement anywhere in the dependency closure (following
+`overlayDependencies`) unless the package itself uses `"external"`, since
+such layers were built on a base that never had Wine Mono. Layers built on the
+`"auto"` and `"disabled"` bases are not checked against each other.
 
 On `x86_64-linux`, `moduleScopes.nativeWin32HeadlessModules` pairs these options
 with the lean `winePackages.stable` Win32 runtime. Desktop applications should
