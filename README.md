@@ -265,6 +265,31 @@ Changes that only affect launchers (environment, DLL overrides, URL handling,
 the launcher scripts of this library) therefore do not rebuild dependent
 installations.
 
+## Installing and launching with different Wine builds
+
+`mkWindowsPackage` and `composeWindowsLayers` take `runtime`, the Wine that
+builds the layers and the base environment, and `launchRuntime` (default:
+`runtime`), the Wine the launcher runs. Building with a released Wine and
+launching with a patched build of it lets patches be tried without rebuilding
+any layer: changing `launchRuntime` rebuilds only the launcher.
+
+```nix
+overlayfsLib.mkWindowsPackage {
+  runtime = releaseModules.runtime;      # builds base environment and layers
+  launchRuntime = patchedModules.runtime; # runs the application
+  # ...
+}
+```
+
+This works because Wine loads a builtin module from its own installation
+when the file in the prefix is a builtin copy (`load_builtin()` in
+`dlls/ntdll/unix/loader.c`: builtin first, the prefix file as fallback), and
+because the launcher keeps Wine from updating the prefix at runtime. Changes
+that only `wine.inf` makes to a prefix (new registry keys, new files) do
+not reach the layers until `runtime` itself changes. Both runtimes must
+therefore be builds of the same Wine release (`upstreamVersion`) for the same
+Windows architecture; otherwise evaluation fails.
+
 ## DLL overrides
 
 Layers and packages declare Wine DLL load-order overrides as data instead of a
