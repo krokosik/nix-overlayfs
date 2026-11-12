@@ -63,9 +63,10 @@ let
   allRuntimeEnvVars = lib.mergeAttrsList (
     (builtins.map (layer: layer.runtimeEnvVars) allLayers) ++ [ runtimeEnvVars ]
   );
-  # Merged per module instead of one layer's WINEDLLOVERRIDES replacing another's.
+  # Merged per module instead of one layer's WINEDLLOVERRIDES replacing another's,
+  # over every layer the launcher mounts (see overlayDependencies below).
   allDllOverrides = overlayfsLib.dllOverrides.combine {
-    layers = baseEnv ++ allLayers;
+    layers = baseEnv ++ [ baseLayer ] ++ baseLayer.overlayDependencies ++ overlayDependencies;
     package = { inherit dllOverrides runtimeEnvVars; };
   };
   _checkLaunchRuntime = overlayfsLib.launchRuntime.check {
