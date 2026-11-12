@@ -15,6 +15,9 @@
 #   mscoree.dll shim, 4.0 does.
 # - The prefix goes back to Windows 10; mscoree=native is exported to every
 #   program launched on top of this layer (dllOverrides).
+# - mscoree.dll has a Wine builtin namesake, so the layer keeps it explicitly
+#   (extraPathsToInclude); without it the composed prefix falls back to Wine's
+#   mscoree and .NET Framework programs fail to start.
 {
   lib,
   fetchurl,
@@ -45,6 +48,10 @@ in
   dllOverrides = {
     mscoree = "native";
   };
+  extraPathsToInclude = [
+    "windows/system32/mscoree.dll"
+  ]
+  ++ lib.optional has64 "windows/syswow64/mscoree.dll";
   unshareInstall =
     { session, ... }:
     ''
