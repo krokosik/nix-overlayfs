@@ -32,16 +32,11 @@
 }:
 
 let
-  _checkManagedRuntime =
-    if
-      builtins.elem managedRuntime [
-        "auto"
-        "disabled"
-      ]
-    then
-      true
-    else
-      throw "managedRuntime must be one of: auto, disabled";
+  _checkManagedRuntime = overlayfsLib.managedRuntime.check managedRuntime;
+  _checkLayerManagedRuntime = overlayfsLib.managedRuntime.checkLayers {
+    inherit managedRuntime packageName;
+    layers = [ baseLayer ] ++ baseLayer.overlayDependencies ++ overlayDependencies;
+  };
   _checkStateMode =
     if
       builtins.elem stateMode [
@@ -108,6 +103,7 @@ let
   '';
 in
 assert _checkManagedRuntime;
+assert _checkLayerManagedRuntime;
 assert _checkStateMode;
 mkOverlayfsPackage {
   inherit (baseLayer) basePackage;

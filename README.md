@@ -208,6 +208,14 @@ Gecko installation prompts. `stateMode = "ephemeral"` places the writable
 prefix, XDG data, and XDG cache below a per-invocation temporary directory and
 removes it after the command exits.
 
+`managedRuntime = "external"` uses a base environment without Wine Mono but
+leaves `mscoree` enabled, for prefixes that get .NET from a layer such as
+`dotnet-framework-4-8`. That layer is built this way and declares
+`passthru.requiredManagedRuntime = "external"`; `mkWindowsPackage` and
+`composeWindowsLayers` refuse to put such a layer on a base environment of
+another kind, since its removal of Wine Mono only works on a base that never
+had it.
+
 On `x86_64-linux`, `moduleScopes.nativeWin32HeadlessModules` pairs these options
 with the lean `winePackages.stable` Win32 runtime. Desktop applications should
 continue using `nativeWin32Modules`, whose existing persistent and integrated
