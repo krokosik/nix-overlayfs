@@ -9,7 +9,7 @@ let
     inherit pkgs;
   };
   sourceSet =
-    if runtime.version == wineSources.stable.version then
+    if (runtime.upstreamVersion or runtime.version) == wineSources.stable.version then
       wineSources.stable
     else
       wineSources.unstable;

@@ -16,6 +16,16 @@
 }:
 let
   runtimeVersion = if (wine ? version) then wine.version else lib.getVersion wine;
+  # The upstream Wine release, for tables keyed on Wine releases (Wine Mono,
+  # Gecko, workarounds). Distributions add a build number ("11.20-1" for
+  # winum's first build of Wine 11.20); a package may name its release in
+  # passthru.wineVersion, otherwise a numeric "-N" suffix is dropped.
+  # Names such as "Proton8-26" are kept as they are.
+  upstreamVersion =
+    let
+      release = builtins.match "([0-9]+[.][0-9]+([.][0-9]+)?)-[0-9]+" runtimeVersion;
+    in
+    wine.wineVersion or (if release == null then runtimeVersion else builtins.head release);
   runtimeCapabilities = capabilities;
 
   toolsPackage = symlinkJoin {
@@ -41,7 +51,14 @@ let
     // extraCommands;
 in
 rec {
-  inherit id toolsPackage windowsArch preferredInstallerArchitecture backend;
+  inherit
+    id
+    toolsPackage
+    windowsArch
+    preferredInstallerArchitecture
+    backend
+    upstreamVersion
+    ;
   version = runtimeVersion;
   programFiles32Path = "/drive_c/Program Files" + (if windowsArch == "win32" then "" else " (x86)");
   programFilesPath = "/drive_c/Program Files";

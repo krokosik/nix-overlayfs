@@ -43,7 +43,9 @@ let
     if runtime ? mkPrefixInitCommands then runtime.mkPrefixInitCommands session else "";
   wineMonoMetadata = builtins.fromJSON (builtins.readFile ./wine-mono.json);
   wineMonoDownloads = wineMonoMetadata.downloads;
-  wineRelease = runtime.version;
+  # The Wine release these tables are keyed on, without a distribution's build
+  # suffix (a winum "11.20-1" is Wine 11.20).
+  wineRelease = runtime.upstreamVersion or runtime.version;
   wineMonoVersion = wineMonoMetadata.versions.${wineRelease} or null;
 
   needFramebuffer =
