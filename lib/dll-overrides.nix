@@ -11,12 +11,15 @@
 let
   normalizeName = name: lib.removeSuffix ".dll" (lib.toLower (lib.trim name));
 
+  # Wine separates module names and load-order entries by commas, spaces and
+  # tabs (separatorsW in dlls/ntdll/unix/loadorder.c).
+  splitEntries =
+    value: lib.filter (entry: entry != "") (lib.splitString "," (lib.replaceStrings [ " " "\t" ] [ "," "," ] value));
+
   normalizeOrder =
     order:
     let
-      entries = lib.filter (entry: entry != "") (
-        lib.splitString "," (lib.replaceStrings [ " " ] [ "," ] order)
-      );
+      entries = splitEntries order;
       letters = lib.filter (letter: letter == "n" || letter == "b") (
         map (entry: lib.toLower (builtins.substring 0 1 entry)) entries
       );
@@ -36,9 +39,7 @@ let
       result: entry:
       let
         parts = lib.splitString "=" entry;
-        names = lib.filter (name: name != "") (
-          lib.splitString "," (lib.replaceStrings [ " " ] [ "," ] (builtins.head parts))
-        );
+        names = splitEntries (builtins.head parts);
         order = lib.concatStringsSep "=" (builtins.tail parts);
       in
       if builtins.length parts < 2 then
