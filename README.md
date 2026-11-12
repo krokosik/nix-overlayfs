@@ -126,23 +126,29 @@ for a launch; the launcher then removes its marker again.
 
 Whenever the set of Nix layers changes (and on the first launch with this
 check), the launcher compares the writable layer's `drive_c/windows` with the
-layers below before mounting. A file that differs from the file it hides is
-handled according to `NIX_OVERLAYFS_SHADOWED_FILES`:
+layers below before mounting. A writable file "hides" a layer file only if the
+mounted prefix would show that layer file without it: the path is resolved
+through the layers as overlayfs does, so whiteouts (`.wh.<name>` files or 0/0
+character devices), opaque directories (`.wh..wh..opq` or an opaque xattr, in
+the writable layer also above `drive_c/windows`) and non-directory entries end
+the lookup. A hiding file is handled according to
+`NIX_OVERLAYFS_SHADOWED_FILES`:
 
 - `prune-builtin` (default): Wine builtin modules (winebuild's
   `Wine builtin DLL` signature at offset 0x40), typically left by an earlier
-  prefix update, are moved aside; other files are kept and reported.
+  prefix update, and copies identical to the file they hide (which would hide
+  that file's next change) are moved aside; other files are kept and reported.
 - `prune`: every hiding file is moved aside.
 - `warn`: only report.
 - `ignore`: skip the check.
 
-Files identical to the layer below are removed in both prune modes, since they
-would hide the next change of that layer. Files in directories that were
-deleted and recreated in the writable layer (opaque directories) hide nothing
-and are left alone. Moved files are kept in
+Nothing is deleted: moved files are kept in
 `<writable layer>/.nix-overlayfs/shadowed/<time>/`, and the latest report is
-`.nix-overlayfs/shadowed-files` (`moved` or `hides`, kind, path, layer). Delete
-`.nix-overlayfs/shadow-check-sources` to run the check on the next launch.
+`.nix-overlayfs/shadowed-files` (`moved` or `hides`, kind, path, layer). The
+scan and every decision come before the first move; if a directory or an
+xattr cannot be read, nothing is moved and the check runs again on the next
+launch. Delete `.nix-overlayfs/shadow-check-sources` to run it on the next
+launch anyway.
 
 ### Session directories
 
