@@ -26,6 +26,12 @@ let
       release = builtins.match "([0-9]+[.][0-9]+([.][0-9]+)?)-[0-9]+" runtimeVersion;
     in
     wine.wineVersion or (if release == null then runtimeVersion else builtins.head release);
+  # Which prefixes this Wine can run without updating them: Wine builds with
+  # the same value produce the same prefix contents (wine.inf, the set of
+  # builtin modules). A Wine package can declare it as
+  # passthru.prefixCompatibility (for example a patched build whose patches
+  # do not change the prefix); otherwise it is the upstream release.
+  prefixCompatibility = wine.prefixCompatibility or upstreamVersion;
   runtimeCapabilities = capabilities;
 
   toolsPackage = symlinkJoin {
@@ -58,6 +64,7 @@ rec {
     preferredInstallerArchitecture
     backend
     upstreamVersion
+    prefixCompatibility
     ;
   version = runtimeVersion;
   programFiles32Path = "/drive_c/Program Files" + (if windowsArch == "win32" then "" else " (x86)");

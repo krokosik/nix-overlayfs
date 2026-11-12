@@ -7,8 +7,10 @@
 # Nix layers below it, including native DLLs such as DXVK's. The Nix layers
 # are the source of truth, so Wine must not update the prefix at runtime.
 #
-# wineboot skips the update when the file starts with "disable"
-# (programs/wineboot/wineboot.c, update_timestamp()).
+# wineboot skips this automatic, timestamp-driven update when the file starts
+# with "disable" (programs/wineboot/wineboot.c, update_timestamp()). It does
+# not stop an explicit `wineboot -u`/`--update` (update_wineprefix() is forced
+# then) or a program that runs wine.inf's sections itself.
 #
 # NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 restores Wine's default behaviour by
 # removing the marker again, so the timestamp of the Nix layers applies.

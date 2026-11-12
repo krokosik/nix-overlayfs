@@ -27,6 +27,13 @@ assert named.runtime.upstreamVersion == "11.20";
 assert proton.runtime.upstreamVersion == "Proton8-26";
 assert buildSuffix.base-env.wine-mono.name == release.base-env.wine-mono.name;
 assert named.base-env.wine-mono.name == "wine-mono-11.3.0-x86.msi";
+# Prefix compatibility: the release unless the Wine package declares it.
+assert buildSuffix.runtime.prefixCompatibility == "11.20";
+assert
+  (modulesFor (wineWith {
+    version = "11.20-1";
+    prefixCompatibility = "winum-11.20-1+inf";
+  })).runtime.prefixCompatibility == "winum-11.20-1+inf";
 pkgs.runCommand "wine-release-versions" { } ''
   touch "$out"
 ''
