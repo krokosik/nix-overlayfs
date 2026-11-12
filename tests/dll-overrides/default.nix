@@ -88,6 +88,21 @@ let
   );
   settled = compose [ dxvkLayer conflictingLayer ] { dllOverrides.d3d11 = "n,b"; };
 
+  # A layer the base layer brings along is mounted, so its overrides apply,
+  # and its conflicts are found.
+  recomposed =
+    extraLayers:
+    compose extraLayers {
+      baseLayer = {
+        basePackage = fakeLayer "dll-overrides-app" { };
+        overlayDependencies = [ dxvkLayer ];
+        runtimeEnvVars = { };
+      };
+    };
+  inheritedConflict = builtins.tryEval (
+    builtins.deepSeq (recomposed [ conflictingLayer ]).drvPath null
+  );
+
   evalChecks =
     assert dll.parse "d3d11,dxgi=n;msquic=" == {
       d3d11 = "n";
@@ -111,6 +126,7 @@ let
     assert dll.render (dll.normalize { "Foo.DLL" = "native,builtin"; }) == "foo=n,b";
     assert dll.exportCommand { } == "";
     assert !conflict.success;
+    assert !inheritedConflict.success;
     true;
 in
 assert evalChecks;
@@ -128,6 +144,8 @@ pkgs.runCommand "dll-overrides-test" { nativeBuildInputs = [ pkgs.gnugrep ]; } '
   test "$(WINEDLLOVERRIDES='d3d11=b' bash -c "$line"'; printf %s "$WINEDLLOVERRIDES"')" = '${expected};d3d11=b'
 
   grep -F "d3d11=n,b" "${settled}/bin/dll-overrides-unwrapped"
+  # The base layer's own DXVK dependency is mounted and keeps its overrides.
+  grep -F "export WINEDLLOVERRIDES='d3d11=n;dxgi=n'" "${recomposed [ ]}/bin/dll-overrides-unwrapped"
 
   touch "$out"
 ''
