@@ -54,6 +54,10 @@ in
   version = "4.8";
   packageName = "dotnet-framework-4-8";
   src = dotnet48;
+  # Built on a base environment without Wine Mono: deleting Mono's files here
+  # would leave overlay whiteouts the store cannot hold (or keep Mono in a
+  # materialized build). Packages using this layer set the same.
+  managedRuntime = "external";
   dllOverrides = {
     mscoree = "native";
   };
@@ -105,5 +109,8 @@ in
   (old: {
     meta = (old.meta or { }) // {
       license = lib.licenses.unfree;
+    };
+    passthru = (old.passthru or { }) // {
+      requiredManagedRuntime = "external";
     };
   })

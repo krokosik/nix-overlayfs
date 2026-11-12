@@ -25,9 +25,16 @@ let
             managedRuntime ? "auto",
           }:
           if hostIntegration then
-            if managedRuntime == "disabled" then self.base-env-no-managed-runtime else self.base-env
+            if managedRuntime == "disabled" then
+              self.base-env-no-managed-runtime
+            else if managedRuntime == "external" then
+              self.base-env-external-managed-runtime
+            else
+              self.base-env
           else if managedRuntime == "disabled" then
             self.base-env-headless
+          else if managedRuntime == "external" then
+            self.base-env-external-managed-runtime-no-host-integration
           else
             self.base-env-no-host-integration;
         autohotkeyLayer = self.autohotkey;
@@ -50,6 +57,14 @@ let
       };
       base-env-no-managed-runtime = callPackage ./wine-base-env {
         managedRuntime = "disabled";
+      };
+      # Without Wine Mono, for prefixes that get .NET from a layer.
+      base-env-external-managed-runtime = callPackage ./wine-base-env {
+        managedRuntime = "external";
+      };
+      base-env-external-managed-runtime-no-host-integration = callPackage ./wine-base-env {
+        hostIntegration = false;
+        managedRuntime = "external";
       };
       autohotkey = callPackage ./autohotkey { };
       crypt32 = callPackage ./crypt32 { };

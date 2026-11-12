@@ -15,6 +15,7 @@ pkgs.lib.makeScope newScope (
     scripts = callPackage ./scripts { };
     runtimeScripts = callPackage ./runtime { };
     dllOverrides = import ./dll-overrides.nix { inherit (pkgs) lib; };
+    managedRuntime = import ./managed-runtime.nix { inherit (pkgs) lib; };
     hostUrlOpener = callPackage ./host-url-opener.nix { };
     hostStartShim = callPackage ./host-start-shim.nix { };
     urlSchemeDiscoverers = callPackage ./url-scheme-discoverers.nix { };

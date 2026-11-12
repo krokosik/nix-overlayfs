@@ -16,6 +16,9 @@
   overlayfsLib,
 
   hostIntegration ? true,
+  # "auto": Wine Mono for .NET programs; "disabled": no .NET (mscoree and
+  # mshtml off); "external": no Wine Mono, a layer provides .NET (for example
+  # dotnet-framework-4-8).
   managedRuntime ? "auto",
 }:
 let
@@ -24,11 +27,12 @@ let
       builtins.elem managedRuntime [
         "auto"
         "disabled"
+        "external"
       ]
     then
       true
     else
-      throw "managedRuntime must be one of: auto, disabled";
+      throw "managedRuntime must be one of: auto, disabled, external";
   session = runtime.mkSession {
     phase = "build";
     sessionRoot = "$PWD/runtime-session";
@@ -39,7 +43,8 @@ let
     if runtime ? mkPrefixInitCommands then runtime.mkPrefixInitCommands session else "";
   wineMonoMetadata = builtins.fromJSON (builtins.readFile ./wine-mono.json);
   wineMonoDownloads = wineMonoMetadata.downloads;
-  wineMonoVersion = wineMonoMetadata.versions.${runtime.version} or null;
+  wineRelease = runtime.version;
+  wineMonoVersion = wineMonoMetadata.versions.${wineRelease} or null;
 
   needFramebuffer =
     {
@@ -66,9 +71,9 @@ let
       "Proton8-13" = false;
       "Proton7-36" = false;
     }
-    .${runtime.version} or false;
+    .${wineRelease} or false;
 
-  prefixWorkaroundCommands = lib.optionalString (runtime.version == "11.8") ''
+  prefixWorkaroundCommands = lib.optionalString (wineRelease == "11.8") ''
     export WINEDLLOVERRIDES="winebth.sys=d''${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
   '';
 

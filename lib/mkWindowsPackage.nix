@@ -72,16 +72,7 @@ let
       true
     else
       throw "buildNamespaceMode must be one of: auto, required, direct";
-  _checkManagedRuntime =
-    if
-      builtins.elem managedRuntime [
-        "auto"
-        "disabled"
-      ]
-    then
-      true
-    else
-      throw "managedRuntime must be one of: auto, disabled";
+  _checkManagedRuntime = overlayfsLib.managedRuntime.check managedRuntime;
   winedbg = "-all";
   packageVersion = version;
   pathsToRemove = builtins.concatStringsSep " " (
@@ -109,6 +100,10 @@ let
     ])
     ++ overlayDependencies;
   overlayDependenciesPlusEnv = baseEnv ++ overlayDependenciesPlusUtils;
+  _checkLayerManagedRuntime = overlayfsLib.managedRuntime.checkLayers {
+    inherit managedRuntime packageName;
+    layers = overlayDependenciesPlusUtils;
+  };
   launchSession = runtime.mkSession {
     phase = "launch";
     sessionRoot = "$tempdir/runtime-session";
@@ -461,6 +456,7 @@ assert lib.assertMsg (
   !(portableReparsePoints && buildNamespaceMode == "required")
 ) "portableReparsePoints requires a materialized build; use buildNamespaceMode auto or direct";
 assert _checkManagedRuntime;
+assert _checkLayerManagedRuntime;
 mkOverlayfsPackage {
   inherit
     basePackage
