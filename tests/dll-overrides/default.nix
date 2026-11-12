@@ -102,6 +102,12 @@ let
       c = "b,n";
       d = "";
     };
+    # Tabs separate names and order entries too.
+    assert dll.parse "foo\tbar=n" == {
+      foo = "n";
+      bar = "n";
+    };
+    assert dll.parse "foo=n\tb" == { foo = "n,b"; };
     assert dll.render (dll.normalize { "Foo.DLL" = "native,builtin"; }) == "foo=n,b";
     assert dll.exportCommand { } == "";
     assert !conflict.success;
