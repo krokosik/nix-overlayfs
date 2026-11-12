@@ -7,7 +7,10 @@
   overlayfsLib,
 }:
 {
+  # The Wine the layers and the base environment were built with.
   runtime,
+  # The Wine the launcher runs, a build of the same Wine release.
+  launchRuntime ? runtime,
   packageName,
   baseLayer,
   overlayDependencies ? [ ],
@@ -65,7 +68,10 @@ let
     layers = baseEnv ++ allLayers;
     package = { inherit dllOverrides runtimeEnvVars; };
   };
-  session = runtime.mkSession {
+  _checkLaunchRuntime = overlayfsLib.launchRuntime.check {
+    inherit runtime launchRuntime packageName;
+  };
+  session = launchRuntime.mkSession {
     phase = "launch";
     sessionRoot = "$tempdir/runtime-session";
     overlayRoot = "$tempdir/overlay";
@@ -87,7 +93,7 @@ let
               nix_overlayfs_protocol_executable="''${nix_overlayfs_protocol_executable//\//\\}"
               ;;
             *)
-              nix_overlayfs_protocol_executable="$(${runtime.toolsPackage}/bin/winepath -w "$tempdir/overlay/${executablePath}")"
+              nix_overlayfs_protocol_executable="$(${launchRuntime.toolsPackage}/bin/winepath -w "$tempdir/overlay/${executablePath}")"
               ;;
           esac
           while IFS= read -r nix_overlayfs_url_scheme; do
@@ -104,6 +110,7 @@ let
 in
 assert _checkManagedRuntime;
 assert _checkLayerManagedRuntime;
+assert _checkLaunchRuntime;
 assert _checkStateMode;
 mkOverlayfsPackage {
   inherit (baseLayer) basePackage;

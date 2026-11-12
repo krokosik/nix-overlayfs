@@ -23,7 +23,11 @@
   overlayfsLib,
 }:
 {
+  # The Wine the installation and its base environment are built with.
   runtime,
+  # The Wine the launcher runs, a build of the same Wine release (for example
+  # with patches under test). Changing it rebuilds only the launcher.
+  launchRuntime ? runtime,
   pname,
   version,
   src,
@@ -104,7 +108,10 @@ let
     inherit managedRuntime packageName;
     layers = overlayDependenciesPlusUtils;
   };
-  launchSession = runtime.mkSession {
+  _checkLaunchRuntime = overlayfsLib.launchRuntime.check {
+    inherit runtime launchRuntime packageName;
+  };
+  launchSession = launchRuntime.mkSession {
     phase = "launch";
     sessionRoot = "$tempdir/runtime-session";
     overlayRoot = "$tempdir/overlay";
@@ -128,7 +135,7 @@ let
               nix_overlayfs_protocol_executable="''${nix_overlayfs_protocol_executable//\//\\}"
               ;;
             *)
-              nix_overlayfs_protocol_executable="$(${runtime.toolsPackage}/bin/winepath -w "$tempdir/overlay/${executablePath}")"
+              nix_overlayfs_protocol_executable="$(${launchRuntime.toolsPackage}/bin/winepath -w "$tempdir/overlay/${executablePath}")"
               ;;
           esac
           while IFS= read -r nix_overlayfs_url_scheme; do
@@ -457,6 +464,7 @@ assert lib.assertMsg (
 ) "portableReparsePoints requires a materialized build; use buildNamespaceMode auto or direct";
 assert _checkManagedRuntime;
 assert _checkLayerManagedRuntime;
+assert _checkLaunchRuntime;
 mkOverlayfsPackage {
   inherit
     basePackage
@@ -500,7 +508,12 @@ mkOverlayfsPackage {
     export WINEDLLOVERRIDES="mscoree,mshtml=d''${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
   '';
   passthru = {
-    inherit managedRuntime runtime runtimeEnvVars;
+    inherit
+      managedRuntime
+      runtime
+      launchRuntime
+      runtimeEnvVars
+      ;
     # This package's own overrides, for packages that use it as a layer.
     dllOverrides = overlayfsLib.dllOverrides.fromLayer { inherit dllOverrides runtimeEnvVars; };
   };

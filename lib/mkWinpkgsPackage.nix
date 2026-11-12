@@ -12,6 +12,7 @@
 }:
 {
   runtime,
+  launchRuntime ? runtime,
   packageName,
   executableName ? "",
   executablePath ? "",
@@ -80,7 +81,7 @@ let
   silentFlag = if silentFlags != null then silentFlags else silentFlagsIndex.${installerType};
 in
 mkWindowsPackage {
-  inherit runtime;
+  inherit runtime launchRuntime;
 
   # Extract metadata from manifest
   pname = manifest.PackageIdentifier;
