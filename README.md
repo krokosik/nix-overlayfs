@@ -149,10 +149,14 @@ and are left alone. Moved files are kept in
 Each launch mounts its prefix in its own directory, `tmp.*` below
 `$XDG_CACHE_HOME/nix-overlayfs/tmp` (or `$XDG_RUNTIME_DIR/nix-overlayfs` for
 ephemeral runtimes), and removes it when the session ends. A launcher that is
-killed cannot clean up, so every launch records its owner (PID and process
-start time) in `session.owner` and removes the directories of sessions that
-are over: no running owner, no process working inside the directory and
-nothing mounted below it.
+killed cannot clean up. Each launch therefore holds an exclusive `flock` on its
+directory's `session.lock`; the descriptor is inherited by every process of
+the session, in any mount namespace, so the lock is released only when the
+last of them exits. Under the base directory's `.lock`, each launch creates
+and locks its own directory and removes the directories whose lock is free
+and that have nothing mounted below them. Directories without `session.lock`
+(left by launchers before this) are never removed automatically; delete them
+by hand once no session of that application runs.
 
 ## URL schemes
 

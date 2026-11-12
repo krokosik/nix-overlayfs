@@ -9,6 +9,7 @@
   findutils,
   gawk,
   gnugrep,
+  util-linux,
 }:
 {
   guardPrefixUpdates = writeShellApplication {
@@ -33,6 +34,7 @@
     runtimeInputs = [
       coreutils
       gawk
+      util-linux
     ];
     text = builtins.readFile ./sessions.sh;
   };

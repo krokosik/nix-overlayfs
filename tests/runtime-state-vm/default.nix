@@ -99,9 +99,28 @@ else
 
       with subtest("directories of killed sessions are removed on the next launch"):
           tmpbase = "/home/alice/.cache/nix-overlayfs/tmp"
-          machine.succeed(f"su - alice -c 'mkdir -p {tmpbase}/tmp.killedsession/overlay'")
+          machine.succeed(
+              f"su - alice -c 'mkdir -p {tmpbase}/tmp.killedsession/overlay {tmpbase}/tmp.legacy/overlay "
+              f"{tmpbase}/tmp.othernamespace/overlay && touch {tmpbase}/tmp.killedsession/session.lock "
+              f"{tmpbase}/tmp.othernamespace/session.lock'"
+          )
+          # A session that lives on in its own user and mount namespace, with
+          # its cwd outside the directory, holds its inherited lock.
+          machine.succeed(
+              "su - alice -c '"
+              "nohup unshare --map-root-user --mount sh -c "
+              f"\"mount --bind /tmp {tmpbase}/tmp.othernamespace/overlay; cd /; "
+              f"exec flock {tmpbase}/tmp.othernamespace/session.lock sleep 300\" "
+              "> /dev/null 2>&1 &'"
+          )
+          machine.wait_until_fails(
+              f"su - alice -c 'flock --nonblock {tmpbase}/tmp.othernamespace/session.lock true'"
+          )
           launch("sweep")
           machine.succeed(f"test ! -e {tmpbase}/tmp.killedsession")
-          machine.succeed(f"test -z \"$(ls -A {tmpbase})\"")
+          machine.succeed(f"test -d {tmpbase}/tmp.othernamespace")
+          # Without session.lock nothing proves the session is over.
+          machine.succeed(f"test -d {tmpbase}/tmp.legacy")
+          machine.succeed(f"test \"$(ls {tmpbase})\" = \"$(printf 'tmp.legacy\\ntmp.othernamespace')\"")
     '';
   }

@@ -340,6 +340,24 @@ stdenv.mkDerivation {
         fi
 
         export originalUser="''${USER:-$(${pkgs.coreutils}/bin/id -un)}"
+
+        # Creates this session's directory below $tmpbase and holds a lock on
+        # its session.lock for the session's lifetime: the descriptor is
+        # inherited by every process of the session, so the lock lasts until
+        # the last of them exits. Creation and the sweep of directories whose
+        # session is over happen under $tmpbase/.lock, so no directory is
+        # swept between its creation and its lock.
+        nix_overlayfs_new_session_dir() {
+          exec {nix_overlayfs_tmpbase_lock}>"$tmpbase/.lock" || exit 1
+          ${pkgs.util-linux}/bin/flock "$nix_overlayfs_tmpbase_lock" || exit 1
+          tempdir="$(${pkgs.coreutils}/bin/mktemp -d -p "$tmpbase")" || exit 1
+          export tempdir
+          exec {nix_overlayfs_session_lock}>"$tempdir/session.lock" || exit 1
+          ${pkgs.util-linux}/bin/flock --nonblock "$nix_overlayfs_session_lock" || exit 1
+          ${overlayfsLib.runtimeScripts.sessions}/bin/nix-overlayfs-sessions sweep "$tmpbase" "$tempdir" || true
+          exec {nix_overlayfs_tmpbase_lock}>&-
+        }
+
         ${
           if stateMode == "ephemeral" then
             ''
@@ -348,7 +366,7 @@ stdenv.mkDerivation {
               mkdir --parents "$tmpbase" || exit 1
               chmod 700 "$tmpbase" || exit 1
 
-              export tempdir=$(mktemp -d -p "$tmpbase")
+              nix_overlayfs_new_session_dir
               export TMPDIR="$tempdir/tmp"
               export XDG_DATA_HOME="$tempdir/xdg-data"
               export XDG_CACHE_HOME="$tempdir/xdg-cache"
@@ -373,16 +391,11 @@ stdenv.mkDerivation {
               mkdir --parents "$appdir" "$tmpbase" || exit 1
               chmod 700 "$tmpbase" || exit 1
 
-              export tempdir=$(mktemp -d -p "$tmpbase")
+              nix_overlayfs_new_session_dir
               export TMPDIR="$tempdir/tmp"
               mkdir --parents "$TMPDIR" || exit 1
             ''
         }
-
-        # Mark this session's directory as ours, then remove the directories of
-        # earlier sessions that were killed before they could clean up.
-        ${overlayfsLib.runtimeScripts.sessions}/bin/nix-overlayfs-sessions claim "$tempdir" || exit 1
-        ${overlayfsLib.runtimeScripts.sessions}/bin/nix-overlayfs-sessions sweep "$tmpbase" "$tempdir" || true
 
         ${extraEnvCommands}
 
