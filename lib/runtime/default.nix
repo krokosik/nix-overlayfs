@@ -8,8 +8,10 @@
   desktop-file-utils,
   diffutils,
   findutils,
+  fuse3,
   gawk,
   gnugrep,
+  gnused,
   scripts,
   util-linux,
   xdg-utils,
@@ -87,6 +89,18 @@ let
         findutils
       ];
       text = builtins.readFile ./upper-layer.sh;
+    };
+
+    namespace = writeShellApplication {
+      name = "nix-overlayfs-namespace";
+      runtimeInputs = [
+        coreutils
+        fuse3
+        gnugrep
+        gnused
+        util-linux
+      ];
+      text = builtins.readFile ./namespace.sh;
     };
 
     # No runtime inputs: the browser it starts gets the caller's PATH.

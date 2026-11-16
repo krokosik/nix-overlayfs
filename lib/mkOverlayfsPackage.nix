@@ -96,6 +96,7 @@ stdenv.mkDerivation {
       urlHandlers = "${overlayfsLib.runtimeScripts.urlHandlers}/bin/nix-overlayfs-url-handlers";
       registry = "${overlayfsLib.runtimeScripts.registry}/bin/nix-overlayfs-registry";
       upperLayer = "${overlayfsLib.runtimeScripts.upperLayer}/bin/nix-overlayfs-upper-layer";
+      namespace = "${overlayfsLib.runtimeScripts.namespace}/bin/nix-overlayfs-namespace";
       urlSchemeRegistrationCommands = lib.optionalString hostIntegration ''
         nix_overlayfs_discover_url_schemes() {
           {
@@ -341,15 +342,7 @@ stdenv.mkDerivation {
             nix_overlayfs_supervisor_pid=""
           fi
           nix_overlayfs_stop_host_browser_broker || true
-          if [ -d "$tempdir/overlay" ]; then
-            ${pkgs.fuse3}/bin/fusermount3 -u "$tempdir/overlay" 2>/dev/null \
-              || ${pkgs.fuse3}/bin/fusermount3 -uz "$tempdir/overlay" 2>/dev/null \
-              || ${pkgs.util-linux}/bin/umount -l "$tempdir/overlay" 2>/dev/null \
-              || true
-          fi
-          if ${pkgs.util-linux}/bin/mountpoint -q "$tempdir/overlay"; then
-            echo "warning: failed to unmount nix-overlayfs runtime at $tempdir/overlay" >&2
-          else
+          if ${namespace} unmount "$tempdir/overlay"; then
             rm -r "$tempdir"
             # Under the directory's lock, so no launcher is creating a session in it.
             if exec {nix_overlayfs_tmpbase_lock}<"$tmpbase" 2>/dev/null; then
@@ -400,30 +393,8 @@ stdenv.mkDerivation {
         trap 'nix_overlayfs_forward_signal INT' INT
         trap 'nix_overlayfs_forward_signal TERM' TERM
 
-        namespace_mode="''${NIX_OVERLAYFS_NAMESPACE_MODE:-${namespaceMode}}"
-        case "$namespace_mode" in
-          auto|required|direct)
-            ;;
-          *)
-            echo "error: NIX_OVERLAYFS_NAMESPACE_MODE must be one of: auto, required, direct" >&2
-            exit 2
-            ;;
-        esac
-
-        if [ "$namespace_mode" = auto ]; then
-          namespace_probe_log="$tempdir/unshare-probe.log"
-          if ${pkgs.util-linux}/bin/unshare --map-root-user --mount true 2>"$namespace_probe_log"; then
-            namespace_mode=required
-          elif grep -Eq '(uid_map|gid_map).*(Operation not permitted|Permission denied)|(unshare failed:|cannot create user namespace:).*(Operation not permitted|Permission denied)' "$namespace_probe_log"; then
-            echo "warning: nix-overlayfs: user/mount namespaces are unavailable; using direct FUSE mode" >&2
-            sed 's/^/warning: nix-overlayfs: unshare: /' "$namespace_probe_log" >&2
-            namespace_mode=direct
-          else
-            echo "error: nix-overlayfs: namespace capability probe failed unexpectedly" >&2
-            cat "$namespace_probe_log" >&2
-            exit 1
-          fi
-        fi
+        namespace_mode="$(${namespace} mode "''${NIX_OVERLAYFS_NAMESPACE_MODE:-${namespaceMode}}" \
+          "$tempdir/unshare-probe.log")" || exit
 
         process_termination_timeout="''${NIX_OVERLAYFS_PROCESS_TERMINATION_TIMEOUT:-${toString processTerminationTimeout}s}"
         supervisor=(
@@ -537,16 +508,7 @@ stdenv.mkDerivation {
           ${if session == null then "" else renderEnvExports session.env}
 
           nix_overlayfs_hide_ld_so_preload() {
-            if [ "''${NIX_OVERLAYFS_DIRECT_MODE:-0}" = 1 ] \
-              || [ "''${NIX_OVERLAYFS_PRESERVE_LD_SO_PRELOAD:-0}" = 1 ] \
-              || [ ! -f /etc/ld.so.preload ]; then
-              return 0
-            fi
-
-            : > "$tempdir/empty-ld.so.preload"
-            if ! ${pkgs.util-linux}/bin/mount --bind "$tempdir/empty-ld.so.preload" /etc/ld.so.preload; then
-              echo "warning: failed to hide /etc/ld.so.preload in Wine mount namespace" >&2
-            fi
+            ${namespace} hide-ld-so-preload "$tempdir"
           }
 
           nix_overlayfs_hide_ld_so_preload

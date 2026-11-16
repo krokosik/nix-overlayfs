@@ -47,7 +47,7 @@ pkgs.stdenvNoCC.mkDerivation {
     grep -F 'export XDG_CACHE_HOME="$tempdir/xdg-cache"' "$entry"
     grep -F 'export WINEDLLOVERRIDES="mscoree,mshtml=d' "$entry"
     grep -F "trap 'exit 143' TERM" "$entry" "$setup"
-    grep -F 'fusermount3 -uz' "$entry" "$setup"
+    grep -F 'nix-overlayfs-namespace unmount "$tempdir/overlay"' "$entry"
 
     ! grep -Fx '${overlayfsLib.hostUrlOpener}' ${closure}/store-paths
     ! grep -Fx '${overlayfsLib.hostStartShim}' ${closure}/store-paths

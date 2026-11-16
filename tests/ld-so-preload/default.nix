@@ -48,12 +48,9 @@ pkgs.stdenvNoCC.mkDerivation {
   buildPhase = ''
     script="${package}/libexec/ld-so-preload-setupEnv.sh"
 
+    # What hiding does is tested in namespace-setup.
     grep -F 'nix_overlayfs_hide_ld_so_preload()' "$script"
-    grep -F 'NIX_OVERLAYFS_PRESERVE_LD_SO_PRELOAD:-0' "$script"
-    grep -F '[ ! -f /etc/ld.so.preload ]' "$script"
-    grep -F ': > "$tempdir/empty-ld.so.preload"' "$script"
-    grep -F 'mount --bind "$tempdir/empty-ld.so.preload" /etc/ld.so.preload' "$script"
-    grep -F 'warning: failed to hide /etc/ld.so.preload in Wine mount namespace' "$script"
+    grep -F 'nix-overlayfs-namespace hide-ld-so-preload "$tempdir"' "$script"
     grep -F 'nix_overlayfs_launch_application()' "$script"
     grep -F 'nix_overlayfs_prepare_launch_session()' "$script"
     grep -F 'nix_overlayfs_run_launch_loop()' "$script"
