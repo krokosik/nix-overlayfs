@@ -305,49 +305,13 @@ stdenv.mkDerivation {
 
         ${sessionFunctions}
 
-        nix_overlayfs_process_host_browser_requests() {
-          local processing_file=""
-          local request_file=""
-          local target_url=""
-
-          mkdir -p "$host_browser_request_dir"
-          for request_file in "$host_browser_request_dir"/request.*; do
-            [ -f "$request_file" ] || continue
-            case "$request_file" in
-              *.tmp|*.processing.*)
-                continue
-                ;;
-            esac
-
-            processing_file="$request_file.processing.$$"
-            if ! mv "$request_file" "$processing_file" 2>/dev/null; then
-              continue
-            fi
-
-            target_url="$(cat "$processing_file" 2>/dev/null || true)"
-            rm -f "$processing_file"
-            [ -n "$target_url" ] || continue
-
-            if ! ${
-              if hostIntegration then lib.getExe overlayfsLib.hostUrlOpener else "${pkgs.coreutils}/bin/false"
-            } --direct "$target_url"; then
-              echo "warning: failed to open URL with host browser: $target_url" >&2
-            fi
-          done
-        }
-
-        nix_overlayfs_host_browser_broker() {
-          while [ ! -e "$host_browser_request_dir/.stop" ]; do
-            nix_overlayfs_process_host_browser_requests
-            sleep 0.2
-          done
-          nix_overlayfs_process_host_browser_requests
-        }
-
         nix_overlayfs_start_host_browser_broker() {
           mkdir -p "$host_browser_request_dir"
           rm -f "$host_browser_request_dir/.stop"
-          nix_overlayfs_host_browser_broker &
+          ${overlayfsLib.runtimeScripts.hostBrowserBroker}/bin/nix-overlayfs-host-browser-broker \
+            "$host_browser_request_dir" ${
+              if hostIntegration then lib.getExe overlayfsLib.hostUrlOpener else "${pkgs.coreutils}/bin/false"
+            } &
           nix_overlayfs_host_browser_broker_pid="$!"
         }
 

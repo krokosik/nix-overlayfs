@@ -66,6 +66,13 @@ let
       ];
       text = builtins.readFile ./url-handlers.sh;
     };
+
+    # No runtime inputs: the browser it starts gets the caller's PATH.
+    hostBrowserBroker = writeShellApplication {
+      name = "nix-overlayfs-host-browser-broker";
+      runtimeInputs = [ ];
+      text = builtins.readFile ./host-browser-broker.sh;
+    };
   };
 in
 self
