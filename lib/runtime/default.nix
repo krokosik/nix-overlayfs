@@ -79,6 +79,16 @@ let
       text = builtins.readFile ./registry.sh;
     };
 
+    upperLayer = writeShellApplication {
+      name = "nix-overlayfs-upper-layer";
+      runtimeInputs = [
+        coreutils
+        diffutils
+        findutils
+      ];
+      text = builtins.readFile ./upper-layer.sh;
+    };
+
     # No runtime inputs: the browser it starts gets the caller's PATH.
     hostBrowserBroker = writeShellApplication {
       name = "nix-overlayfs-host-browser-broker";

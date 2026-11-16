@@ -37,9 +37,9 @@ pkgs.stdenvNoCC.mkDerivation {
   buildPhase = ''
     script="${package}/libexec/upperdir-skeleton-setupEnv.sh"
 
+    # The skeleton itself is tested in upper-layer.
     grep -F 'nix_overlayfs_prepare_upperdir_skeleton()' "$script"
-    grep -F 'find "$lower_drive_c" -maxdepth 5 -type d -print0' "$script"
-    grep -F 'chmod a+rwx "$appdir/$relative_dir" || true' "$script"
+    grep -F 'nix-overlayfs-upper-layer skeleton "$appdir" "''${nix_overlayfs_lowerdirs[@]}"' "$script"
 
     awk '
       /^[[:space:]]*nix_overlayfs_prepare_upperdir_skeleton$/ && !prepare { prepare = NR }

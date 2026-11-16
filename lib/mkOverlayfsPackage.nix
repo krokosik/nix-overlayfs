@@ -95,6 +95,7 @@ stdenv.mkDerivation {
     let
       urlHandlers = "${overlayfsLib.runtimeScripts.urlHandlers}/bin/nix-overlayfs-url-handlers";
       registry = "${overlayfsLib.runtimeScripts.registry}/bin/nix-overlayfs-registry";
+      upperLayer = "${overlayfsLib.runtimeScripts.upperLayer}/bin/nix-overlayfs-upper-layer";
       urlSchemeRegistrationCommands = lib.optionalString hostIntegration ''
         nix_overlayfs_discover_url_schemes() {
           {
@@ -499,24 +500,9 @@ stdenv.mkDerivation {
             "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}"
 
           nix_overlayfs_prepare_upperdir_skeleton() {
-            local lowerdir=""
-            local lower_drive_c=""
-            local source_dir=""
-            local relative_dir=""
             local -a nix_overlayfs_lowerdirs=()
-
             IFS=: read -r -a nix_overlayfs_lowerdirs <<< "$lowerdirs"
-            for lowerdir in "''${nix_overlayfs_lowerdirs[@]}"; do
-              lower_drive_c="$lowerdir/drive_c"
-              [ -d "$lower_drive_c" ] || continue
-
-              while IFS= read -r -d "" source_dir; do
-                relative_dir="''${source_dir#"$lowerdir"/}"
-                [ "$relative_dir" != "$source_dir" ] || continue
-                mkdir -p "$appdir/$relative_dir"
-                chmod a+rwx "$appdir/$relative_dir" || true
-              done < <(${pkgs.findutils}/bin/find "$lower_drive_c" -maxdepth 5 -type d -print0)
-            done
+            ${upperLayer} skeleton "$appdir" "''${nix_overlayfs_lowerdirs[@]}"
           }
 
           nix_overlayfs_prepare_upperdir_skeleton
@@ -539,14 +525,7 @@ stdenv.mkDerivation {
           rm -rf "$overlay_workdir"
           mkdir -p "$overlay_workdir"
           ${lib.optionalString hostIntegration ''
-            rm -f \
-              "$appdir/drive_c/windows/system32/start.exe" \
-              "$appdir/drive_c/windows/syswow64/start.exe"
-            mkdir -p \
-              "$appdir/drive_c/windows/system32" \
-              "$appdir/drive_c/windows/syswow64"
-            cp -f '${overlayfsLib.hostStartShim}/bin/x86_64/start.exe' "$appdir/drive_c/windows/system32/start.exe"
-            cp -f '${overlayfsLib.hostStartShim}/bin/i686/start.exe' "$appdir/drive_c/windows/syswow64/start.exe"
+            ${upperLayer} install-start-shim "$appdir" ${overlayfsLib.hostStartShim}
           ''}
 
           ${pkgs.fuse-overlayfs}/bin/fuse-overlayfs \
@@ -618,23 +597,10 @@ stdenv.mkDerivation {
             ${
               if hostIntegration then
                 ''
-                  rm -f \
-                    "$appdir/drive_c/windows/system32/start.exe" \
-                    "$appdir/drive_c/windows/syswow64/start.exe"
-
-                  if [ -f "$tempdir/overlay/drive_c/windows/system32/start.exe" ] \
-                    && cmp -s "$tempdir/overlay/drive_c/windows/system32/start.exe" '${overlayfsLib.hostStartShim}/bin/x86_64/start.exe'; then
-                    rm -f "$tempdir/overlay/drive_c/windows/system32/start.exe"
-                  fi
-                  if [ -f "$tempdir/overlay/drive_c/windows/syswow64/start.exe" ] \
-                    && cmp -s "$tempdir/overlay/drive_c/windows/syswow64/start.exe" '${overlayfsLib.hostStartShim}/bin/i686/start.exe'; then
-                    rm -f "$tempdir/overlay/drive_c/windows/syswow64/start.exe"
-                  fi
+                  ${upperLayer} remove-start-shim "$appdir" "$tempdir/overlay" ${overlayfsLib.hostStartShim}
                 ''
               else
-                ''
-                  :
-                ''
+                ":"
             }
           }
 
