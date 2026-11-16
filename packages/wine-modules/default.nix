@@ -89,7 +89,7 @@ let
               runHook postInstall
             '';
           };
-          packageName = "dxvk-${version}";
+          packageName = "dxvk";
         };
       dxvk_2_6_2 = dxvkRelease {
         version = "2.6.2";
