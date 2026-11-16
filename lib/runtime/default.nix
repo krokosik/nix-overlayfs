@@ -5,48 +5,66 @@
   writeShellApplication,
   attr,
   coreutils,
+  desktop-file-utils,
   diffutils,
   findutils,
   gawk,
   gnugrep,
   util-linux,
+  xdg-utils,
 }:
-{
-  guardPrefixUpdates = writeShellApplication {
-    name = "nix-overlayfs-guard-prefix-updates";
-    runtimeInputs = [ coreutils ];
-    text = builtins.readFile ./guard-prefix-updates.sh;
-  };
+let
+  self = {
+    guardPrefixUpdates = writeShellApplication {
+      name = "nix-overlayfs-guard-prefix-updates";
+      runtimeInputs = [ coreutils ];
+      text = builtins.readFile ./guard-prefix-updates.sh;
+    };
 
-  checkShadowed = writeShellApplication {
-    name = "nix-overlayfs-check-shadowed";
-    runtimeInputs = [
-      attr
-      coreutils
-      diffutils
-      findutils
-    ];
-    text = builtins.readFile ./check-shadowed.sh;
-  };
+    checkShadowed = writeShellApplication {
+      name = "nix-overlayfs-check-shadowed";
+      runtimeInputs = [
+        attr
+        coreutils
+        diffutils
+        findutils
+      ];
+      text = builtins.readFile ./check-shadowed.sh;
+    };
 
-  sessions = writeShellApplication {
-    name = "nix-overlayfs-sessions";
-    runtimeInputs = [
-      coreutils
-      gawk
-      util-linux
-    ];
-    text = builtins.readFile ./sessions.sh;
-  };
+    sessions = writeShellApplication {
+      name = "nix-overlayfs-sessions";
+      runtimeInputs = [
+        coreutils
+        gawk
+        util-linux
+      ];
+      text = builtins.readFile ./sessions.sh;
+    };
 
-  forgetDesktopEntry = writeShellApplication {
-    name = "nix-overlayfs-forget-desktop-entry";
-    runtimeInputs = [
-      coreutils
-      diffutils
-      gawk
-      gnugrep
-    ];
-    text = builtins.readFile ./forget-desktop-entry.sh;
+    forgetDesktopEntry = writeShellApplication {
+      name = "nix-overlayfs-forget-desktop-entry";
+      runtimeInputs = [
+        coreutils
+        diffutils
+        gawk
+        gnugrep
+      ];
+      text = builtins.readFile ./forget-desktop-entry.sh;
+    };
+
+    urlHandlers = writeShellApplication {
+      name = "nix-overlayfs-url-handlers";
+      runtimeInputs = [
+        self.forgetDesktopEntry
+        coreutils
+        desktop-file-utils
+        gawk
+        gnugrep
+        xdg-utils
+      ];
+      text = builtins.readFile ./url-handlers.sh;
+    };
   };
-}
+in
+self

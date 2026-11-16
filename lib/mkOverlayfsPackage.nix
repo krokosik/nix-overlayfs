@@ -93,110 +93,33 @@ stdenv.mkDerivation {
 
   buildPhase =
     let
-      desktopId = "${executableName}-nix-overlayfs-url-handler.desktop";
+      urlHandlers = "${overlayfsLib.runtimeScripts.urlHandlers}/bin/nix-overlayfs-url-handlers";
       urlSchemeRegistrationCommands = lib.optionalString hostIntegration ''
-                  nix_overlayfs_discover_url_schemes() {
+        nix_overlayfs_discover_url_schemes() {
           {
             :
             ${explicitUrlSchemeCommands}
             ${urlSchemeDiscoveryCommands}
-          } \
-            | ${pkgs.gawk}/bin/awk '
-                {
-                  scheme = tolower($0)
-                  if (scheme !~ /^[a-z][a-z0-9+.-]*$/) next
-                  if (scheme == "http" || scheme == "https" || scheme == "ftp" || scheme == "mailto") next
-                  if (!seen[scheme]++) print scheme
-                }
-              '
-        }
-
-        # Removes URL handler entries this state directory wrote earlier, under
-        # this or an older executable name, except the one named in $1.
-        nix_overlayfs_remove_url_handlers() {
-          local keep="$1"
-          local applications_dir="$XDG_DATA_HOME/applications"
-          local desktop=""
-          local -a removed=()
-
-          for desktop in "$applications_dir"/*-nix-overlayfs-url-handler.desktop; do
-            [ -f "$desktop" ] || continue
-            [ "$desktop" != "$keep" ] || continue
-            ${pkgs.gnugrep}/bin/grep -qxF "Exec=$state_dir/open-url %u" "$desktop" || continue
-            rm -f -- "$desktop"
-            removed+=("''${desktop##*/}")
-          done
-          [ "''${#removed[@]}" -gt 0 ] || return 0
-
-          for desktop in "''${removed[@]}"; do
-            ${overlayfsLib.runtimeScripts.forgetDesktopEntry}/bin/nix-overlayfs-forget-desktop-entry "$desktop" \
-              "''${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list" \
-              "$applications_dir/mimeapps.list" || true
-          done
-          ${pkgs.desktop-file-utils}/bin/update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
+          } | ${urlHandlers} filter-schemes
         }
 
         nix_overlayfs_register_url_handlers() {
-          local applications_dir="$XDG_DATA_HOME/applications"
-          local desktop_file="$applications_dir/${desktopId}"
-          local handler_script="$state_dir/open-url"
-          local mime_types=""
-          local existing_default=""
-          local scheme=""
-
           nix_overlayfs_url_schemes_file="$state_dir/url-schemes"
           nix_overlayfs_discover_url_schemes > "$nix_overlayfs_url_schemes_file"
-
           ${
             if registerHostUrlHandlers then
               ''
-                nix_overlayfs_remove_url_handlers "$desktop_file"
+                ${urlHandlers} register "$state_dir" "$nix_overlayfs_url_schemes_file" \
+                  ${lib.escapeShellArg executableName} "__STOREPATH__/bin/${executableName}" \
+                  ${lib.escapeShellArg basePackageName}
               ''
             else
               ''
                 # The host declares the handler; drop what earlier launches wrote.
-                nix_overlayfs_remove_url_handlers ""
-                rm -f -- "$handler_script"
-                return 0
+                ${urlHandlers} unregister "$state_dir"
               ''
           }
-
-          mkdir -p "$applications_dir"
-          [ -s "$nix_overlayfs_url_schemes_file" ] || return 0
-
-          # Prefer this package; after it was garbage collected, use the
-          # installed launcher of the same name.
-          printf '%s\n' \
-            '#!${pkgs.bash}/bin/bash' \
-            'launcher=__STOREPATH__/bin/${executableName}' \
-            '[ -x "$launcher" ] || launcher="$(command -v ${executableName})" || exit 127' \
-            'exec "$launcher" --nix-overlayfs-open-url "$@"' \
-            > "$handler_script"
-          chmod 755 "$handler_script"
-
-          while IFS= read -r scheme; do
-            mime_types="$mime_types""x-scheme-handler/$scheme;"
-          done < "$nix_overlayfs_url_schemes_file"
-
-          printf '%s\n' \
-            '[Desktop Entry]' \
-            'Type=Application' \
-            'Name=${executableName} URL Handler' \
-            'NoDisplay=true' \
-            "Exec=$handler_script %u" \
-            "MimeType=$mime_types" \
-            > "$desktop_file"
-
-          ${pkgs.desktop-file-utils}/bin/update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
-
-          while IFS= read -r scheme; do
-            existing_default="$(${pkgs.xdg-utils}/bin/xdg-mime query default "x-scheme-handler/$scheme" 2>/dev/null || true)"
-            if [ -n "$existing_default" ] && [ "$existing_default" != "${desktopId}" ]; then
-              echo "warning: x-scheme-handler/$scheme was registered to $existing_default; setting ${desktopId} for ${basePackageName}" >&2
-            fi
-            ${pkgs.xdg-utils}/bin/xdg-mime default '${desktopId}' "x-scheme-handler/$scheme" >/dev/null 2>&1 || true
-          done < "$nix_overlayfs_url_schemes_file"
-                  }
+        }
 
                   nix_overlayfs_record_session_env() {
                     local env_file="$state_dir/session-env"
