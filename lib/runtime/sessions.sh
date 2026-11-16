@@ -8,7 +8,7 @@
 # launcher opens that file and takes an exclusive flock(2) right after
 # creating the directory, and the descriptor is inherited by every process of
 # the session (in any mount namespace), so the lock lasts until the last of
-# them exits. The caller holds TMPBASE/.lock, under which launchers create and
+# them exits. The caller holds a lock on TMPBASE itself, under which launchers create and
 # lock their directories, so no directory is claimed while it is swept.
 #
 # Directories without session.lock (from launchers before this) cannot be

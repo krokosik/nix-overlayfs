@@ -79,10 +79,10 @@ pkgs.runCommand "session-sweep-test"
     ! ${sessions} claim "$base/tmp.current" 2>/dev/null
 
     # The launcher creates and locks its directory, and sweeps, under
-    # $tmpbase/.lock; it removes the directory when it hands a URL to a
+    # a lock on $tmpbase itself; it removes the directory when it hands a URL to a
     # running session and leaves.
     script="${package}/bin/session-sweep-unwrapped"
-    grep -F 'exec {nix_overlayfs_tmpbase_lock}>"$tmpbase/.lock"' "$script"
+    grep -F 'exec {nix_overlayfs_tmpbase_lock}<"$tmpbase"' "$script"
     grep -F 'exec {nix_overlayfs_session_lock}>"$tempdir/session.lock"' "$script"
     awk '
       /flock "\$nix_overlayfs_tmpbase_lock"/ && !lock { lock = NR }

@@ -160,7 +160,7 @@ ephemeral runtimes), and removes it when the session ends. A launcher that is
 killed cannot clean up. Each launch therefore holds an exclusive `flock` on its
 directory's `session.lock`; the descriptor is inherited by every process of
 the session, in any mount namespace, so the lock is released only when the
-last of them exits. Under the base directory's `.lock`, each launch creates
+last of them exits. Holding a lock on the base directory itself, each launch creates
 and locks its own directory and removes the directories whose lock is free
 and that have nothing mounted below them. Directories without `session.lock`
 (left by launchers before this) are never removed automatically; delete them

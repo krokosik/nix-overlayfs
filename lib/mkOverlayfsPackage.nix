@@ -161,8 +161,8 @@ stdenv.mkDerivation {
               ''
           }
 
-          [ -s "$nix_overlayfs_url_schemes_file" ] || return 0
           mkdir -p "$applications_dir"
+          [ -s "$nix_overlayfs_url_schemes_file" ] || return 0
 
           # Prefer this package; after it was garbage collected, use the
           # installed launcher of the same name.
@@ -345,11 +345,22 @@ stdenv.mkDerivation {
         # its session.lock for the session's lifetime: the descriptor is
         # inherited by every process of the session, so the lock lasts until
         # the last of them exits. Creation and the sweep of directories whose
-        # session is over happen under $tmpbase/.lock, so no directory is
-        # swept between its creation and its lock.
+        # session is over happen under a lock on the $tmpbase directory itself,
+        # so no directory is swept between its creation and its lock. A
+        # session that ends removes $tmpbase under the same lock once it is
+        # empty, so after locking, check that it is still the same directory.
         nix_overlayfs_new_session_dir() {
-          exec {nix_overlayfs_tmpbase_lock}>"$tmpbase/.lock" || exit 1
-          ${pkgs.util-linux}/bin/flock "$nix_overlayfs_tmpbase_lock" || exit 1
+          while :; do
+            mkdir --parents "$tmpbase" || exit 1
+            chmod 700 "$tmpbase" || exit 1
+            exec {nix_overlayfs_tmpbase_lock}<"$tmpbase" || exit 1
+            ${pkgs.util-linux}/bin/flock "$nix_overlayfs_tmpbase_lock" || exit 1
+            if [ "$(${pkgs.coreutils}/bin/stat -Lc %d:%i "/proc/self/fd/$nix_overlayfs_tmpbase_lock")" \
+              = "$(${pkgs.coreutils}/bin/stat -c %d:%i "$tmpbase" 2>/dev/null)" ]; then
+              break
+            fi
+            exec {nix_overlayfs_tmpbase_lock}<&-
+          done
           tempdir="$(${pkgs.coreutils}/bin/mktemp -d -p "$tmpbase")" || exit 1
           export tempdir
           exec {nix_overlayfs_session_lock}>"$tempdir/session.lock" || exit 1
@@ -532,7 +543,12 @@ stdenv.mkDerivation {
             echo "warning: failed to unmount nix-overlayfs runtime at $tempdir/overlay" >&2
           else
             rm -r "$tempdir"
-            rmdir "$tmpbase" 2>/dev/null || true
+            # Under the directory's lock, so no launcher is creating a session in it.
+            if exec {nix_overlayfs_tmpbase_lock}<"$tmpbase" 2>/dev/null; then
+              ${pkgs.util-linux}/bin/flock "$nix_overlayfs_tmpbase_lock" \
+                && rmdir "$tmpbase" 2>/dev/null || true
+              exec {nix_overlayfs_tmpbase_lock}<&-
+            fi
           fi
           exit "$status"
         }
