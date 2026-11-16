@@ -589,21 +589,8 @@ stdenv.mkDerivation {
             ${
               if session != null && session ? commands && session.commands ? wineserver then
                 ''
-                  local overlay_root="$1"
-                  local shutdown_timeout="''${NIX_OVERLAYFS_WINESERVER_SHUTDOWN_TIMEOUT:-30s}"
-                  local kill_timeout="''${NIX_OVERLAYFS_WINESERVER_KILL_TIMEOUT:-5s}"
-                  local wineserver=${lib.escapeShellArg session.commands.wineserver}
-
-                  [ -d "$overlay_root" ] || return 0
-                  [ -x "$wineserver" ] || return 0
-
-                  if ! ${pkgs.coreutils}/bin/timeout --foreground "$shutdown_timeout" \
-                    env WINEPREFIX="$overlay_root" WINEARCH="''${WINEARCH:-}" "$wineserver" --wait 2>/dev/null; then
-                    echo "warning: wineserver --wait exceeded $shutdown_timeout for ${basePackageName}; killing remaining Wine processes" >&2
-                    env WINEPREFIX="$overlay_root" WINEARCH="''${WINEARCH:-}" "$wineserver" -k 2>/dev/null || true
-                    ${pkgs.coreutils}/bin/timeout --foreground "$kill_timeout" \
-                      env WINEPREFIX="$overlay_root" WINEARCH="''${WINEARCH:-}" "$wineserver" --wait 2>/dev/null || true
-                  fi
+                  ${overlayfsLib.runtimeScripts.wineShutdown}/bin/nix-overlayfs-wine-shutdown \
+                    ${lib.escapeShellArg session.commands.wineserver} "$1" ${lib.escapeShellArg basePackageName}
                 ''
               else
                 ":"

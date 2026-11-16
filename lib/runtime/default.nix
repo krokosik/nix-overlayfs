@@ -103,6 +103,12 @@ let
       text = builtins.readFile ./namespace.sh;
     };
 
+    wineShutdown = writeShellApplication {
+      name = "nix-overlayfs-wine-shutdown";
+      runtimeInputs = [ coreutils ];
+      text = builtins.readFile ./wine-shutdown.sh;
+    };
+
     # No runtime inputs: the browser it starts gets the caller's PATH.
     hostBrowserBroker = writeShellApplication {
       name = "nix-overlayfs-host-browser-broker";
