@@ -25,6 +25,7 @@ pkgs.lib.makeScope newScope (
     mkOverlayfsPackage = callPackage ./mkOverlayfsPackage.nix { };
     mkWindowsPackage = callPackage ./mkWindowsPackage.nix { };
     mkWinpkgsPackage = callPackage ./mkWinpkgsPackage.nix { };
+    mkFileLayer = callPackage ./mkFileLayer.nix { };
     diffs = {
       system = ./diffs/system.json.diff;
       user = ./diffs/user.json.diff;
