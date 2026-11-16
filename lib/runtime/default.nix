@@ -37,6 +37,7 @@ let
       runtimeInputs = [
         coreutils
         gawk
+        gnugrep
         util-linux
       ];
       text = builtins.readFile ./sessions.sh;

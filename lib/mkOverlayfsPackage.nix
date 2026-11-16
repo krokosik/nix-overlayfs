@@ -121,117 +121,78 @@ stdenv.mkDerivation {
           }
         }
 
-                  nix_overlayfs_record_session_env() {
-                    local env_file="$state_dir/session-env"
-                    local env_file_tmp="$env_file.$$"
-                    local name=""
-                    local value=""
+        # Stays in this shell: it records the shell's own variables, and a
+        # separate program would see the PATH its wrapper sets.
+        nix_overlayfs_record_session_env() {
+          local env_file="$state_dir/session-env"
+          local env_file_tmp="$env_file.$$"
+          local name=""
+          local value=""
 
-                    : > "$env_file_tmp"
-                    for name in \
-                      DBUS_SESSION_BUS_ADDRESS \
-                      DISPLAY \
-                      DXVK_LOG_LEVEL \
-                      DXVK_STATE_CACHE \
-                      LD_LIBRARY_PATH \
-                      MESA_VK_IGNORE_CONFORMANCE_WARNING \
-                      PATH \
-                      RIVE_WINE_DISPLAY_DRIVER \
-                      RIVE_WINE_DPI_EFFECTIVE \
-                      RIVE_WINE_DPI_SCALE \
-                      RIVE_WINE_WAYLAND_SURFACE_SCALE \
-                      RIVE_WINE_WAYLAND_SURFACE_SCALE_EFFECTIVE \
-                      VK_DRIVER_FILES \
-                      VK_ICD_FILENAMES \
-                      VK_LAYER_PATH \
-                      WAYLAND_DISPLAY \
-                      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS \
-                      WINEPREFIX \
-                      WINEARCH \
-                      WINEDEBUG \
-                      WINEDLLPATH \
-                      WINEDLLOVERRIDES \
-                      WINEESYNC \
-                      WINEFSYNC \
-                      XAUTHORITY \
-                      XDG_CURRENT_DESKTOP \
-                      XDG_RUNTIME_DIR \
-                      XDG_SESSION_TYPE
-                    do
-                      value="''${!name-}"
-                      if [ -n "$value" ]; then
-                        printf '%s=%q\n' "$name" "$value" >> "$env_file_tmp"
-                      fi
-                    done
-                    mv "$env_file_tmp" "$env_file"
-                  }
+          : > "$env_file_tmp"
+          for name in \
+            DBUS_SESSION_BUS_ADDRESS \
+            DISPLAY \
+            DXVK_LOG_LEVEL \
+            DXVK_STATE_CACHE \
+            LD_LIBRARY_PATH \
+            MESA_VK_IGNORE_CONFORMANCE_WARNING \
+            PATH \
+            RIVE_WINE_DISPLAY_DRIVER \
+            RIVE_WINE_DPI_EFFECTIVE \
+            RIVE_WINE_DPI_SCALE \
+            RIVE_WINE_WAYLAND_SURFACE_SCALE \
+            RIVE_WINE_WAYLAND_SURFACE_SCALE_EFFECTIVE \
+            VK_DRIVER_FILES \
+            VK_ICD_FILENAMES \
+            VK_LAYER_PATH \
+            WAYLAND_DISPLAY \
+            WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS \
+            WINEPREFIX \
+            WINEARCH \
+            WINEDEBUG \
+            WINEDLLPATH \
+            WINEDLLOVERRIDES \
+            WINEESYNC \
+            WINEFSYNC \
+            XAUTHORITY \
+            XDG_CURRENT_DESKTOP \
+            XDG_RUNTIME_DIR \
+            XDG_SESSION_TYPE; do
+            value="''${!name-}"
+            if [ -n "$value" ]; then
+              printf '%s=%q\n' "$name" "$value" >> "$env_file_tmp"
+            fi
+          done
+          mv "$env_file_tmp" "$env_file"
+        }
 
-                  nix_overlayfs_load_session_env() {
-                    if [ -f "$state_dir/session-env" ]; then
-                      # shellcheck disable=SC1091
-                      set -a
-                      . "$state_dir/session-env"
-                      set +a
-                    fi
-                  }
+        ${sessionFunctions}
+      '';
+      sessions = "${overlayfsLib.runtimeScripts.sessions}/bin/nix-overlayfs-sessions";
+      # Shared by the entry and the environment script: the running session
+      # of this writable layer and the URLs handed to it.
+      sessionFunctions = ''
+        nix_overlayfs_load_session_env() {
+          if [ -f "$state_dir/session-env" ]; then
+            # shellcheck disable=SC1091
+            set -a
+            . "$state_dir/session-env"
+            set +a
+          fi
+        }
 
-                  nix_overlayfs_enqueue_url_request() {
-                    local request_file=""
+        nix_overlayfs_enqueue_url_request() {
+          ${sessions} enqueue-url "$state_dir" "$callback_url"
+        }
 
-                    mkdir -p "$state_dir/open-requests"
-                    request_file="$(mktemp "$state_dir/open-requests/request.XXXXXXXXXX")"
-                    printf '%s\n' "$callback_url" > "$request_file"
-                  }
-
-                  nix_overlayfs_active_session_exists() {
-                    local candidate=""
-                    local cmdline_file=""
-                    local cmdline=""
-
-                    if [ -n "$active_pid" ] \
-                      && kill -0 "$active_pid" 2>/dev/null \
-                      && grep -F " $active_overlay " "/proc/$active_pid/mountinfo" >/dev/null 2>&1; then
-                      return 0
-                    fi
-
-                    for cmdline_file in /proc/[0-9]*/cmdline; do
-                      [ -r "$cmdline_file" ] || continue
-                      cmdline="$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null || true)"
-                      for candidate in \
-                        "$active_overlay/${executablePath}" \
-                        "$active_overlay/${lib.removePrefix "/" executablePath}"
-                      do
-                        if [ -n "$cmdline" ] && [[ "$cmdline" == *"$candidate"* ]]; then
-                          return 0
-                        fi
-                      done
-                    done
-
-                    return 1
-                  }
-
+        nix_overlayfs_active_session_exists() {
+          ${sessions} active "$state_dir" ${lib.escapeShellArg executablePath}
+        }
       '';
       overlayProcessCommands = ''
         nix_overlayfs_overlay_process_exists() {
-          local overlay_root="$1"
-          local candidate=""
-          local cmdline_file=""
-          local cmdline=""
-
-          for cmdline_file in /proc/[0-9]*/cmdline; do
-            [ -r "$cmdline_file" ] || continue
-            cmdline="$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null || true)"
-            for candidate in \
-              "$overlay_root/${executablePath}" \
-              "$overlay_root/${lib.removePrefix "/" executablePath}"
-            do
-              if [ -n "$cmdline" ] && [[ "$cmdline" == *"$candidate"* ]]; then
-                return 0
-              fi
-            done
-          done
-
-          return 1
+          ${sessions} overlay-process-exists "$1" ${lib.escapeShellArg executablePath}
         }
       '';
       activeUrlSchemeOpenInvocation = "nix_overlayfs_enqueue_url_request";
@@ -342,49 +303,7 @@ stdenv.mkDerivation {
         ''}
         nix_overlayfs_host_browser_broker_pid=""
 
-        nix_overlayfs_load_session_env() {
-          if [ -f "$state_dir/session-env" ]; then
-            # shellcheck disable=SC1091
-            set -a
-            . "$state_dir/session-env"
-            set +a
-          fi
-        }
-
-        nix_overlayfs_enqueue_url_request() {
-          local request_file=""
-
-          mkdir -p "$state_dir/open-requests"
-          request_file="$(mktemp "$state_dir/open-requests/request.XXXXXXXXXX")"
-          printf '%s\n' "$callback_url" > "$request_file"
-        }
-
-        nix_overlayfs_active_session_exists() {
-          local candidate=""
-          local cmdline_file=""
-          local cmdline=""
-
-          if [ -n "$active_pid" ] \
-            && kill -0 "$active_pid" 2>/dev/null \
-            && grep -F " $active_overlay " "/proc/$active_pid/mountinfo" >/dev/null 2>&1; then
-            return 0
-          fi
-
-          for cmdline_file in /proc/[0-9]*/cmdline; do
-            [ -r "$cmdline_file" ] || continue
-            cmdline="$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null || true)"
-            for candidate in \
-              "$active_overlay/${executablePath}" \
-              "$active_overlay/${lib.removePrefix "/" executablePath}"
-            do
-              if [ -n "$cmdline" ] && [[ "$cmdline" == *"$candidate"* ]]; then
-                return 0
-              fi
-            done
-          done
-
-          return 1
-        }
+        ${sessionFunctions}
 
         nix_overlayfs_process_host_browser_requests() {
           local processing_file=""
@@ -484,20 +403,6 @@ stdenv.mkDerivation {
         }
 
         ${lib.optionalString hostIntegration ''
-          nix_overlayfs_running_session() {
-            active_pid=""
-            active_overlay=""
-            if [ -f "$state_dir/session.pid" ] && [ -f "$state_dir/overlay-root" ]; then
-              active_pid="$(cat "$state_dir/session.pid" 2>/dev/null || true)"
-              active_overlay="$(cat "$state_dir/overlay-root" 2>/dev/null || true)"
-            fi
-
-            [ -n "$active_pid" ] \
-              && [ -n "$active_overlay" ] \
-              && [ -d "$active_overlay" ] \
-              && nix_overlayfs_active_session_exists
-          }
-
           case "''${1:-}" in
             --nix-overlayfs-open-url|--nix-overlayfs-forward-url)
               callback_url="''${2:-}"
@@ -506,7 +411,7 @@ stdenv.mkDerivation {
                 nix_overlayfs_exit_early 2
               fi
 
-              if nix_overlayfs_running_session; then
+              if nix_overlayfs_active_session_exists; then
                 nix_overlayfs_load_session_env
                 ${activeUrlSchemeOpenInvocation}
                 nix_overlayfs_exit_early $?
@@ -879,21 +784,8 @@ stdenv.mkDerivation {
 
           nix_overlayfs_process_url_requests() {
             local callback_url=""
-            local processing_file=""
-            local request_file=""
 
-            mkdir -p "$state_dir/open-requests"
-            for request_file in "$state_dir"/open-requests/request.*; do
-              [ -f "$request_file" ] || continue
-              processing_file="$request_file.processing.$$"
-              if ! mv "$request_file" "$processing_file" 2>/dev/null; then
-                continue
-              fi
-
-              callback_url="$(cat "$processing_file" 2>/dev/null || true)"
-              rm -f "$processing_file"
-              [ -n "$callback_url" ] || continue
-
+            while callback_url="$(${sessions} take-url-request "$state_dir")"; do
               if ! ( ${urlSchemeOpenInvocation} ); then
                 echo "warning: failed to open URL in active ${basePackageName} Wine prefix: $callback_url" >&2
               fi
@@ -931,28 +823,9 @@ stdenv.mkDerivation {
             launch_pid=$!
           }
 
-          nix_overlayfs_find_active_session() {
-            active_pid=""
-            active_overlay=""
-
-            if [ -f "$state_dir/session.pid" ] && [ -f "$state_dir/overlay-root" ]; then
-              active_pid="$(cat "$state_dir/session.pid" 2>/dev/null || true)"
-              active_overlay="$(cat "$state_dir/overlay-root" 2>/dev/null || true)"
-            fi
-
-            if [ -n "$active_pid" ] \
-              && [ -n "$active_overlay" ] \
-              && [ -d "$active_overlay" ] \
-              && nix_overlayfs_active_session_exists; then
-              return 0
-            fi
-
-            return 1
-          }
-
           nix_overlayfs_forward_url_to_active_session() {
             callback_url="$1"
-            if nix_overlayfs_find_active_session; then
+            if nix_overlayfs_active_session_exists; then
               nix_overlayfs_load_session_env
               ${activeUrlSchemeOpenInvocation}
               return $?
