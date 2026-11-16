@@ -590,6 +590,48 @@ With this toolbox of fully reproducible Wine environments, application dependenc
 and unattended installation helpers, it should be possible to package and distribute any Windows application
 for Linux without needing to distribute the installers themselves.
 
+## Launcher runtime scripts and tests
+
+The launcher `mkOverlayfsPackage` generates (`bin/<executableName>-unwrapped`,
+which sets up the session, and `libexec/<executableName>-setupEnv.sh`, which
+mounts the prefix and runs the application) is mostly glue. The work is done by
+standalone programs in `lib/runtime/`, built with `writeShellApplication` so
+`shellcheck` checks them at build time, and exposed as
+`overlayfsLib.runtimeScripts`:
+
+- `nix-overlayfs-sessions`: session directories of killed launchers, the
+  running session of a writable layer, URLs handed to it;
+- `nix-overlayfs-url-handlers`: the host URL handler `.desktop` entry, its
+  `open-url` script and the scheme defaults;
+- `nix-overlayfs-forget-desktop-entry`: removes a deleted entry from
+  `mimeapps.list` files;
+- `nix-overlayfs-host-browser-broker`: opens the pages Wine asks for in the
+  host browser;
+- `nix-overlayfs-registry`: merges the layers' registry files, replaces keys
+  of `user.reg`;
+- `nix-overlayfs-upper-layer`: the writable layer's directory skeleton and the
+  `start.exe` shim;
+- `nix-overlayfs-guard-prefix-updates` and `nix-overlayfs-check-shadowed`:
+  see [Persistent runtime state](#persistent-runtime-state);
+- `nix-overlayfs-namespace`: the namespace mode, hiding `/etc/ld.so.preload`,
+  unmounting;
+- `nix-overlayfs-wine-shutdown`: waits for the prefix's `wineserver`.
+
+What stays in the generated scripts needs the launcher shell itself: the
+session lock descriptors, sourcing and recording `session-env`, the package's
+hooks and environment, and the launch loop. The shell functions that hooks use
+(`nix_overlayfs_upsert_user_reg_section`, `nix_overlayfs_registry_string`)
+call the programs.
+
+Each program has a check in `tests/<name>/` that runs it against fixtures
+(`nix build .#checks.x86_64-linux.<name>`). NixOS VM tests run real
+launchers: `lifecycle-vm` installs a fake Windows application, launches it
+(its URL handler is registered), switches to a version whose Nix layer changed
+and checks that nothing in the writable layer hides the new layer file, and
+finally launches it with `registerHostUrlHandlers = false`, after which
+`~/.local/share/applications` holds nothing of it. `nix flake check` runs all
+of them.
+
 ## Acknowledgements
 
 Many thanks to [nix-overlayfs concept by xstepa73](https://github.com/xstepa73/nix-overlayfs),
