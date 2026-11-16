@@ -341,6 +341,44 @@ overrides, so the user's entries win (Wine lets a later entry for the same
 module replace an earlier one). The helpers are available as
 `overlayfsLib.dllOverrides` (`parse`, `normalize`, `combine`, `render`).
 
+Wine reads `WINEDLLOVERRIDES` before the per-program keys
+(`HKCU\Software\Wine\AppDefaults\<program>.exe\DllOverrides`), so an override
+set this way also applies to programs that must not get it. For overrides
+that belong to a layer's files and may need per-program exceptions, use the
+registry instead (`registryDllOverrides` of `mkFileLayer`, below).
+
+## File layers: DXVK, vkd3d-proton and other native DLLs
+
+`overlayfsLib.mkFileLayer` builds a layer from files and registry DLL
+overrides, without Wine:
+
+```nix
+overlayfsLib.mkFileLayer {
+  pname = "my-dlls";
+  version = "1.0";
+  files."drive_c/windows/system32/foo.dll" = "${foo}/x64/foo.dll";
+  registryDllOverrides.foo = "native";
+}
+```
+
+The overrides go into the layer's `user.reg` (`HKCU\Software\Wine\DllOverrides`),
+merged with the other layers' registry at launch; per-program keys from other
+layers keep their priority. Registry values from different layers do not
+conflict at evaluation: the higher layer wins at runtime.
+
+The module scopes provide:
+
+- `dxvk` (nixpkgs' DXVK), `dxvk_2_6_2`, and `dxvkRelease { version; src; }`
+  for a release archive pinned by its hash;
+- `vkd3d-proton` (3.0.1 by default; nixpkgs has no package), with
+  `.override { archive = fetchurl { ... }; archiveVersion = "..."; }` for
+  another release or a patched build with the same layout (`x64/`, `x86/`).
+
+All three set their DLLs to `native` in the registry. Used as
+`overlayDependencies` of `composeWindowsLayers`, they are runtime layers:
+changing their version rebuilds only the launcher, not the installation
+below.
+
 ## Migrating from `composeWineLayers`
 
 The old `composeWineLayers` entrypoint has been replaced by

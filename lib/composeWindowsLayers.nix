@@ -150,4 +150,8 @@ mkOverlayfsPackage {
 
     export WINEDLLOVERRIDES="mscoree,mshtml=d''${WINEDLLOVERRIDES:+;$WINEDLLOVERRIDES}"
   '';
+  passthru = {
+    inherit managedRuntime runtime launchRuntime;
+    requiredManagedRuntime = if managedRuntime == "external" then "external" else null;
+  };
 }

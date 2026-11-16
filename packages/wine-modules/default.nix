@@ -72,25 +72,34 @@ let
       fonts = callPackage ./fonts { };
       gecko = callPackage ./wine-gecko { pkgs = pkgs; };
       dxvk = callPackage ./wine-dxvk { dxvk = pkgs.dxvk; };
-      dxvk_2_6_2 = callPackage ./wine-dxvk {
-        dxvk = pkgs.stdenvNoCC.mkDerivation {
-          pname = "dxvk";
-          version = "2.6.2";
-          src = pkgs.fetchzip {
-            url = "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz";
-            sha256 = "1vfw4amwbs5b007vlfrr8lir3r7kxbhk5gi6wk4wynfa8ly4sj77";
+      # DXVK from a release archive (dxvk-<version>.tar.gz, pinned by the
+      # archive's hash): dxvkRelease { version = "2.7.1"; src = fetchurl { ... }; }
+      dxvkRelease =
+        { version, src }:
+        callPackage ./wine-dxvk {
+          dxvk = pkgs.stdenvNoCC.mkDerivation {
+            pname = "dxvk";
+            inherit version src;
+            dontConfigure = true;
+            dontBuild = true;
+            installPhase = ''
+              runHook preInstall
+              mkdir -p "$out"
+              cp -r x32 x64 "$out"/
+              runHook postInstall
+            '';
           };
-          dontConfigure = true;
-          dontBuild = true;
-          installPhase = ''
-            runHook preInstall
-            mkdir -p "$out"
-            cp -r "$src"/. "$out"/
-            runHook postInstall
-          '';
+          packageName = "dxvk-${version}";
         };
-        packageName = "dxvk-2.6.2";
+      dxvk_2_6_2 = dxvkRelease {
+        version = "2.6.2";
+        src = pkgs.fetchurl {
+          url = "https://github.com/doitsujin/dxvk/releases/download/v2.6.2/dxvk-2.6.2.tar.gz";
+          # Unpacks to the tree the earlier fetchzip pin had (sha256 1vfw4amw...).
+          hash = "sha256-F3YYdlVq/VVzbLiV0YT1ocVdQzUPGx47Ep+NKHBteZI=";
+        };
       };
+      vkd3d-proton = callPackage ./vkd3d-proton { };
       mfc42 = callPackage ./mfc42 { };
       mingw = callPackage ./mingw { };
       msvcp60 = callPackage ./msvcp60 { };

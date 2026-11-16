@@ -1,6 +1,11 @@
+# DXVK as a file layer: its DLLs, and "native" overrides for them in the
+# layer's registry (not WINEDLLOVERRIDES, so per-program exceptions under
+# HKCU\Software\Wine\AppDefaults still apply; see lib/mkFileLayer.nix).
+#
+# `dxvk` is a directory with x64/ and x32/ subdirectories: nixpkgs' dxvk, or
+# an unpacked release archive (see dxvkRelease in ../default.nix).
 {
   lib,
-
   overlayfsLib,
   runtime,
 
@@ -8,31 +13,25 @@
   packageName ? "dxvk",
 }:
 let
-  installPath32 = if runtime.windowsArch == "wow64" then "windows/syswow64" else "windows/system32";
-  installPath64 = "windows/system32";
-  dllsToInstall = [
-    "d3d8.dll"
-    "d3d9.dll"
-    "d3d10core.dll"
-    "d3d11.dll"
-    "dxgi.dll"
+  dlls = [
+    "d3d8"
+    "d3d9"
+    "d3d10core"
+    "d3d11"
+    "dxgi"
   ];
-in
-overlayfsLib.mkWindowsPackage {
-  inherit runtime;
-  inherit (dxvk) pname version;
   src = lib.getBin dxvk;
-  unshareInstall =
-    { ... }:
-    ''
-      cp $src/x32/* "$WINEPREFIX/drive_c/${installPath32}"
-    ''
-    + lib.optionalString (runtime.windowsArch == "wow64") ''
-      cp $src/x64/* "$WINEPREFIX/drive_c/${installPath64}"
-    '';
-  extraPathsToInclude =
-    (map (x: installPath32 + "/" + x) dllsToInstall)
-    ++ lib.optionals (runtime.windowsArch == "wow64") (map (x: installPath64 + "/" + x) dllsToInstall);
-  inherit packageName;
-  dllOverrides = lib.genAttrs (map (lib.removeSuffix ".dll") dllsToInstall) (_: "n");
+  dir32 = if runtime.windowsArch == "wow64" then "syswow64" else "system32";
+  filesFor =
+    dir: sourceDir:
+    lib.listToAttrs (
+      map (dll: lib.nameValuePair "drive_c/windows/${dir}/${dll}.dll" "${src}/${sourceDir}/${dll}.dll") dlls
+    );
+in
+overlayfsLib.mkFileLayer {
+  pname = packageName;
+  inherit (dxvk) version;
+  files =
+    filesFor dir32 "x32" // lib.optionalAttrs (runtime.windowsArch == "wow64") (filesFor "system32" "x64");
+  registryDllOverrides = lib.genAttrs dlls (_: "native");
 }
