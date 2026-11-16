@@ -10,6 +10,7 @@
   findutils,
   gawk,
   gnugrep,
+  scripts,
   util-linux,
   xdg-utils,
 }:
@@ -65,6 +66,17 @@ let
         xdg-utils
       ];
       text = builtins.readFile ./url-handlers.sh;
+    };
+
+    registry = writeShellApplication {
+      name = "nix-overlayfs-registry";
+      runtimeInputs = [
+        coreutils
+        diffutils
+        gawk
+        scripts.mergeWineRegistries
+      ];
+      text = builtins.readFile ./registry.sh;
     };
 
     # No runtime inputs: the browser it starts gets the caller's PATH.

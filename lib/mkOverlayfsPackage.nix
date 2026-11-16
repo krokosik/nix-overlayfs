@@ -94,6 +94,7 @@ stdenv.mkDerivation {
   buildPhase =
     let
       urlHandlers = "${overlayfsLib.runtimeScripts.urlHandlers}/bin/nix-overlayfs-url-handlers";
+      registry = "${overlayfsLib.runtimeScripts.registry}/bin/nix-overlayfs-registry";
       urlSchemeRegistrationCommands = lib.optionalString hostIntegration ''
         nix_overlayfs_discover_url_schemes() {
           {
@@ -494,23 +495,8 @@ stdenv.mkDerivation {
 
           nix_overlayfs_registry_signature="$state_dir/registry-sources"
           nix_overlayfs_registry_signature_next="$tempdir/registry-sources"
-          for nix_overlayfs_registry_source in "''${nix_overlayfs_registry_sources[@]}"; do
-            if [ "$nix_overlayfs_registry_source" = "$appdir" ]; then
-              continue
-            fi
-            ${pkgs.coreutils}/bin/readlink -f "$nix_overlayfs_registry_source"
-          done > "$nix_overlayfs_registry_signature_next"
-
-          if [ -f "$appdir/system.reg" ] \
-            && [ -f "$appdir/user.reg" ] \
-            && [ -f "$appdir/userdef.reg" ] \
-            && [ -f "$nix_overlayfs_registry_signature" ] \
-            && cmp -s "$nix_overlayfs_registry_signature" "$nix_overlayfs_registry_signature_next"; then
-            :
-          else
-            ${overlayfsLib.scripts.mergeWineRegistries}/bin/merge-wine-registries "$appdir" "''${nix_overlayfs_registry_sources[@]}"
-            cp -f "$nix_overlayfs_registry_signature_next" "$nix_overlayfs_registry_signature"
-          fi
+          ${registry} merge "$appdir" "$nix_overlayfs_registry_signature" \
+            "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}"
 
           nix_overlayfs_prepare_upperdir_skeleton() {
             local lowerdir=""
@@ -596,39 +582,15 @@ stdenv.mkDerivation {
           fi
           fi
 
+          # For hooks: nix_overlayfs_registry_string VALUE prints a registry
+          # string; nix_overlayfs_upsert_user_reg_section KEY < VALUES replaces
+          # a key of the writable layer's user.reg.
           nix_overlayfs_registry_string() {
-            local value="$1"
-            value="''${value//\\/\\\\}"
-            value="''${value//\"/\\\"}"
-            printf '"%s"' "$value"
+            ${registry} string "$1"
           }
 
           nix_overlayfs_upsert_user_reg_section() {
-            local section="$1"
-            local registry="$appdir/user.reg"
-            local body_file="$tempdir/nix-overlayfs-user-reg-body.$$"
-            local next_registry="$tempdir/nix-overlayfs-user-reg.$$"
-
-            cat > "$body_file"
-            mkdir -p "$(${pkgs.coreutils}/bin/dirname "$registry")"
-
-            if [ -f "$registry" ]; then
-              NIX_OVERLAYFS_USER_REG_SECTION="[$section]" ${pkgs.gawk}/bin/awk '
-                BEGIN { section = ENVIRON["NIX_OVERLAYFS_USER_REG_SECTION"] }
-                /^\[/ { skip = ($0 == section || substr($0, 1, length(section) + 1) == section " ") }
-                !skip { print }
-              ' "$registry" > "$next_registry"
-            else
-              printf '%s\n\n' 'WINE REGISTRY Version 2' > "$next_registry"
-            fi
-
-            {
-              printf '\n[%s] %s\n' "$section" "$(${pkgs.coreutils}/bin/date +%s)"
-              cat "$body_file"
-            } >> "$next_registry"
-
-            mv "$next_registry" "$registry"
-            rm -f "$body_file"
+            ${registry} upsert-section "$appdir/user.reg" "$1" "$tempdir"
           }
 
           nix_overlayfs_configure_host_browser() {
