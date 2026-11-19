@@ -82,6 +82,23 @@ pkgs.runCommand "registry-helpers-test" { nativeBuildInputs = [ pkgs.gnugrep ]; 
   ${registry} merge "$PWD/app" state/registry-sources tmp/registry-sources "$PWD/low" "$PWD/high" "$PWD/app"
   grep -F 'Software\\again' app/system.reg
 
+  # A failed merge does not stop the launch, but is not recorded: the next
+  # launch merges again. (A directory in place of user.reg cannot be written.)
+  mkdir failapp failstate
+  mkdir failapp/user.reg
+  ${registry} merge "$PWD/failapp" failstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/failapp" 2> fail.log
+  grep -F 'merged again on the next launch' fail.log
+  test ! -e failstate/registry-sources
+  rmdir failapp/user.reg
+  ${registry} merge "$PWD/failapp" failstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/failapp"
+  test -f failapp/user.reg
+  printf '%s\n' "$PWD/low" | diff -u - failstate/registry-sources
+  # A merge that fails later drops the earlier record as well.
+  rm failapp/user.reg
+  mkdir failapp/user.reg
+  ${registry} merge "$PWD/failapp" failstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/failapp" 2>/dev/null
+  test ! -e failstate/registry-sources
+
   ! ${registry} 2>/dev/null
   ! ${registry} merge "$PWD/app" state/registry-sources 2>/dev/null
   ! ${registry} upsert-section user.reg 2>/dev/null
