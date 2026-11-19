@@ -106,7 +106,28 @@ let
       msxml4 = callPackage ./msxml4 { };
       msxml6 = callPackage ./msxml6 { };
       vcrun2022 = callPackage ./vcrun2022 { };
+      # WebView2 resolved through winget-pkgs at evaluation time (fetchGit and
+      # import from derivation); prefer webview2-pinned.
       webview2 = callPackage ./webview2 { };
+      # WebView2 from a pinned installer (x64 Evergreen Standalone Installer),
+      # without winget-pkgs. For a package with managedRuntime = "external":
+      # webview2-pinned.override { managedRuntime = "external"; }
+      webview2-pinned = callPackage ./webview2-pinned { };
+      # Another installer, pinned by its hash:
+      # webview2Release { version = "..."; src = fetchurl { ... }; }
+      webview2Release =
+        {
+          version,
+          src,
+          architecture ? "x64",
+          managedRuntime ? "auto",
+        }:
+        webview2-pinned.override {
+          installerVersion = version;
+          installer = src;
+          installerArchitecture = architecture;
+          inherit managedRuntime;
+        };
       win10 = callPackage ./win10 { };
       win11 = callPackage ./win11 { };
     };
