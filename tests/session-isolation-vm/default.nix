@@ -111,6 +111,9 @@ else
 
           with subtest(f"{mode}: other launchers find the running session"):
               machine.succeed(f"su - alice -c '${sessions} active {state} /probe'")
+              # The layer got the launcher's state generation.
+              machine.succeed(f"test \"$(head -n 1 {state}/state-generation)\" = ${toString overlayfsLib.stateGeneration}")
+              machine.succeed(f"sed -n 2p {state}/state-generation | grep -Fx ${package}")
               pidns = machine.succeed(f"cat /tmp/{mode}.pidns").strip()
               if mode == "direct":
                   assert pidns == init_pidns, pidns

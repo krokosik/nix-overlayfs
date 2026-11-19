@@ -411,6 +411,10 @@ stdenv.mkDerivation {
           nix_overlayfs_exit_early 75
         fi
         printf '%s\n' "$$" > "$state_dir/session.lock"
+        # A layer written by a newer launcher is left alone.
+        ${overlayfsLib.runtimeScripts.state}/bin/nix-overlayfs-state check-generation \
+          "$state_dir" ${toString overlayfsLib.stateGeneration} "__STOREPATH__" \
+          || nix_overlayfs_exit_early 1
 
         mkdir --parents "$appdir" "$tempdir/bind" "$tempdir/overlay" || exit 1
         nix_overlayfs_supervisor_pid=""
@@ -814,5 +818,6 @@ stdenv.mkDerivation {
       processTerminationTimeout
       stateMode
       ;
+    inherit (overlayfsLib) stateGeneration;
   };
 }

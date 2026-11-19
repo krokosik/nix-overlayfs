@@ -1,6 +1,7 @@
 # A second launch against a writable layer whose session lock is held stops
-# before it changes anything in the layer, and says who holds the lock. Runs
-# the real launcher in the build sandbox: it never gets as far as mounting.
+# before it changes anything in the layer, and says who holds the lock; so
+# does a launch against a layer of a newer state generation. Runs the real
+# launcher in the build sandbox: it never gets as far as mounting.
 {
   pkgs,
   overlayfsLib,
@@ -36,7 +37,8 @@ pkgs.runCommand "state-lock-test"
     mkdir -p "$state_dir"
 
     # Another session holds the lock.
-    flock "$lock" sleep 300 &
+    # -o: the lock goes with flock itself, not with sleep.
+    flock -o "$lock" sleep 300 &
     holder=$!
     trap 'kill "$holder" 2>/dev/null || true' EXIT
     while flock --nonblock "$lock" true; do sleep 0.05; done
@@ -47,7 +49,7 @@ pkgs.runCommand "state-lock-test"
     cat second.log
     test "$status" -eq 75
     grep -F "error: nix-overlayfs: state-lock-base already runs from $appdir:" second.log
-    grep -F "process $holder (flock $lock sleep 300)" second.log
+    grep -F "process $holder (flock -o $lock sleep 300)" second.log
 
     # Nothing in the writable layer changed: no registry, no shadow check,
     # no overlay workdir, no broker directory, the holder's pid kept.
@@ -86,6 +88,45 @@ pkgs.runCommand "state-lock-test"
     test "$(${state} describe-holder "$state_dir")" = "an unknown process"
     ! ${state} 2>/dev/null
     ! ${state} describe-holder 2>/dev/null
+
+    # A layer of a newer state generation: the launch takes the lock, then
+    # refuses before it changes anything else, naming both launchers.
+    kill "$holder"
+    wait "$holder" || true
+    newer=$((${toString overlayfsLib.stateGeneration} + 1))
+    printf '%s\n%s\n%s\n' "$newer" /nix/store/newer-launcher 2030-01-01T00:00:00Z > "$state_dir/state-generation"
+    cp "$state_dir/state-generation" newer-marker
+    rm -rf "$state_dir/open-requests"
+    status=0
+    ${package}/bin/state-lock > newer.log 2>&1 || status=$?
+    cat newer.log
+    test "$status" -eq 1
+    grep -F "has state generation $newer (written by /nix/store/newer-launcher on 2030-01-01T00:00:00Z)" newer.log
+    grep -F "this launcher (${package}) only knows generation ${toString overlayfsLib.stateGeneration}" newer.log
+    cmp newer-marker "$state_dir/state-generation"
+    test "$(ls -A "$appdir")" = .nix-overlayfs
+    test "$(ls -A "$state_dir")" = "$(printf 'session.lock\nstate-generation')"
+    test -z "$(ls -A "$tmpbase")"
+    flock --nonblock "$lock" true
+
+    # The program itself: a layer without the marker is accepted and gets
+    # it, as does one of an older generation; garbage is refused.
+    mkdir gen
+    ${state} check-generation gen 3 /nix/store/three
+    test "$(head -n 2 gen/state-generation)" = "$(printf '3\n/nix/store/three')"
+    ${state} check-generation gen 3 /nix/store/three-again
+    test "$(sed -n 2p gen/state-generation)" = /nix/store/three-again
+    ${state} check-generation gen 4 /nix/store/four
+    test "$(head -n 1 gen/state-generation)" = 4
+    ! ${state} check-generation gen 3 /nix/store/three 2>/dev/null
+    test "$(head -n 1 gen/state-generation)" = 4
+    printf '99999999999999999999\n' > gen/state-generation
+    ! ${state} check-generation gen 3 /nix/store/three 2>/dev/null
+    printf 'garbage\n' > gen/state-generation
+    ! ${state} check-generation gen 3 /nix/store/three 2> garbage.log
+    grep -F 'is not a state generation' garbage.log
+    ! ${state} check-generation gen x /nix/store/three 2>/dev/null
+    ! ${state} check-generation gen 3 2>/dev/null
 
     touch "$out"
   ''

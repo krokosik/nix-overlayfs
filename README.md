@@ -150,6 +150,25 @@ Packages that took a lock of their own in `extraPreLaunchCommands` to keep two
 sessions apart no longer need it; such a lock came too late (after the registry
 merge and the mount) and was inherited by Wine.
 
+### State generation
+
+An older build of a package run against a writable layer that a newer build
+already used could misread or damage it. The launcher therefore keeps the
+layer's format generation in `.nix-overlayfs/state-generation` (the
+generation, the launcher's store path and when it wrote the file). A launch
+whose own generation (`overlayfsLib.stateGeneration`, defined in
+`lib/state-generation.nix`) is lower refuses the layer, right after taking the
+session lock and before it changes anything else, and exits 1:
+
+```
+error: nix-overlayfs: the writable layer <layer> has state generation 2 (written by /nix/store/...-<package>-overlay-<version> on <date>); this launcher (/nix/store/...) only knows generation 1 and could damage it. Start the newer package instead.
+```
+
+Layers without the file (from launchers before it existed) are accepted and
+get it; a lower or equal generation is accepted and recorded. The generation
+is raised in the same change that makes launchers write the layer in a way
+older launchers cannot handle; `lib/state-generation.nix` keeps its history.
+
 ### Wine prefix updates
 
 Wine updates a prefix (wineboot's `PreInstall`, `DefaultInstall` and
@@ -645,7 +664,8 @@ standalone programs in `lib/runtime/`, built with `writeShellApplication` so
 - `nix-overlayfs-sessions`: session directories of killed launchers, the
   running session of a writable layer, URLs handed to it, processes left
   over from a session in direct mode;
-- `nix-overlayfs-state`: who holds a writable layer's session lock;
+- `nix-overlayfs-state`: who holds a writable layer's session lock, its state
+  generation;
 - `nix-overlayfs-url-handlers`: the host URL handler `.desktop` entry, its
   `open-url` script and the scheme defaults;
 - `nix-overlayfs-forget-desktop-entry`: removes a deleted entry from
@@ -679,8 +699,8 @@ runs a session whose pre-launch commands start a background service, in
 namespace and direct mode: a second launch is refused and names the session,
 neither the application nor the service has the state lock open, and nothing
 of the session is left when it ends or when its supervisor is killed.
-`state-lock` checks in the build sandbox that a refused launch changes nothing
-in the writable layer. `nix flake check` runs all of them.
+`state-lock` checks in the build sandbox that a launch refused because of the
+lock or a newer state generation changes nothing in the writable layer. `nix flake check` runs all of them.
 
 ## Acknowledgements
 
