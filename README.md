@@ -394,9 +394,14 @@ The module scopes provide two WebView2 Runtime layers:
 
 `webview2-pinned` runs `<installer> /silent /install`, waits at most 60
 seconds (`wineserverWaitTimeout`) for the Wine processes the installer leaves
-behind (then kills them), and fails the build unless
-`EdgeWebView\Application\<version>\msedgewebview2.exe` was installed, with
-`<version>` the one the layer is declared with. Built on 2026-11-19 with
+behind (then kills them), and fails the build unless `Program Files` or
+`Program Files (x86)` has `Microsoft\EdgeWebView\Application\<version>\msedgewebview2.exe`
+as a regular file whose PE header names the installer's architecture
+(Machine `0x8664` for x64, `0x14c` for x86, `0xaa64` for arm64), with
+`<version>` the one the layer is declared with; other version directories are
+ignored. The check is `passthru.checkInstall`
+(`nix-overlayfs-webview2-check-install PREFIX VERSION ARCHITECTURE`), tested
+against fake prefixes in `tests/webview2-install-check`. Built on 2026-11-19 with
 `managedRuntime = "external"` on `nativeModules` (x86_64-linux), the layer is
 912 MB; the installer leaves Wine processes behind, so the 60-second wait
 ends with a kill.

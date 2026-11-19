@@ -20,7 +20,7 @@
   lib,
   fetchurl,
   coreutils,
-  findutils,
+  writeShellApplication,
   runtime,
   overlayfsLib,
 
@@ -43,6 +43,13 @@ let
   runtimeArchitectures =
     runtime.preferredInstallerArchitectures or [ runtime.preferredInstallerArchitecture ];
   bounded = "${coreutils}/bin/timeout ${toString wineserverWaitTimeout}";
+  # Checks the installed version directory and the PE machine of its
+  # msedgewebview2.exe (tests/webview2-install-check).
+  checkInstall = writeShellApplication {
+    name = "nix-overlayfs-webview2-check-install";
+    runtimeInputs = [ coreutils ];
+    text = builtins.readFile ./check-install.sh;
+  };
 in
 (overlayfsLib.mkWindowsPackage {
   inherit runtime managedRuntime packageName;
@@ -66,19 +73,7 @@ in
       # Check the files, not only the installer's exit status. The x64
       # installer on wow64 installs Program Files (x86)/Microsoft/EdgeWebView/
       # Application/<version>/msedgewebview2.exe.
-      webview=$(${findutils}/bin/find "$WINEPREFIX/drive_c" -path '*/EdgeWebView/Application/*/msedgewebview2.exe' -print -quit)
-      if [ -z "$webview" ]; then
-        echo "error: ${packageName}: msedgewebview2.exe was not installed" >&2
-        exit 1
-      fi
-      echo "WebView2 installed: $webview"
-      case "$webview" in
-        */${lib.escapeShellArg installerVersion}/msedgewebview2.exe) ;;
-        *)
-          echo "error: ${packageName}: the installer did not install WebView2 ${installerVersion}" >&2
-          exit 1
-          ;;
-      esac
+      ${lib.getExe checkInstall} "$WINEPREFIX" ${lib.escapeShellArg installerVersion} ${lib.escapeShellArg installerArchitecture}
     '';
 }).overrideAttrs
   (old: {
@@ -87,7 +82,7 @@ in
       license = lib.licenses.unfree;
     };
     passthru = (old.passthru or { }) // {
-      inherit installer installerArchitecture;
+      inherit installer installerArchitecture checkInstall;
       webview2Version = installerVersion;
     };
   })
