@@ -127,8 +127,12 @@ a rebuild.
 
 Before it changes anything in the writable layer (merging the registry, the
 overlay work directory, the shadowed-files check, the mount), a launch takes an
-exclusive `flock` on `<writable layer>/.nix-overlayfs/session.lock` and writes
-its process id into it. The runtime supervisor keeps the lock until the
+exclusive `flock` on `<writable layer>/.nix-overlayfs/session.lock`. Creating
+that file (and its directory) is the only change made before the lock is
+held; the launch then checks the [state generation](#state-generation) and
+only after that writes its process id into the file. The lock is taken with
+up to a second of waiting, since URL forwarders test it briefly. The runtime
+supervisor keeps the lock until the
 session has ended and its prefix is unmounted. The descriptor is closed for
 every process of the session (close-on-exec), so a process left over from a
 session cannot keep the layer locked.
@@ -140,15 +144,14 @@ A second launch while the lock is held changes nothing and exits with status
 error: nix-overlayfs: <package> already runs from <writable layer>: process 1234 (<command line>)
 ```
 
-URLs are not affected: `--nix-overlayfs-open-url` and
-`--nix-overlayfs-forward-url` hand the URL to a running session without taking
-the lock, and `--nix-overlayfs-open-url` while a session is still starting
-(before it registered in `session.pid`) queues the URL for that session
-instead of starting another.
+URLs never take the lock; see [URL schemes](#url-schemes) for how they reach a
+session that is starting, running or closing.
 
-Packages that took a lock of their own in `extraPreLaunchCommands` to keep two
-sessions apart no longer need it; such a lock came too late (after the registry
-merge and the mount) and was inherited by Wine.
+This is the only session lock a package needs. Packages that took a lock of
+their own in `extraPreLaunchCommands` (often also called `session.lock`) to
+keep two sessions apart should drop it: it came too late (after the registry
+merge and the mount), and its descriptor was inherited by Wine, so a leftover
+Wine process kept it.
 
 ### State generation
 
@@ -164,10 +167,23 @@ session lock and before it changes anything else, and exits 1:
 error: nix-overlayfs: the writable layer <layer> has state generation 2 (written by /nix/store/...-<package>-overlay-<version> on <date>); this launcher (/nix/store/...) only knows generation 1 and could damage it. Start the newer package instead.
 ```
 
+URL forwarding checks the generation too, before it writes anything: a
+launcher does not hand a URL to the session of a layer with a newer
+generation (`--nix-overlayfs-open-url` and `--nix-overlayfs-forward-url` exit
+1).
+
 Layers without the file (from launchers before it existed) are accepted and
 get it; a lower or equal generation is accepted and recorded. The generation
 is raised in the same change that makes launchers write the layer in a way
 older launchers cannot handle; `lib/state-generation.nix` keeps its history.
+It covers nix-overlayfs's own state. A package whose own state format changes
+incompatibly (files its hooks write into the layer) needs nix-overlayfs's
+generation raised in the same change, or a guard of its own.
+
+The protection has limits: launchers built before the guard existed do not
+check the file and can still damage a newer layer, and the guard only
+compares generations, so a format change made without raising it is not
+caught.
 
 ### Wine prefix updates
 
@@ -242,10 +258,42 @@ are registered in two places at every launch:
 The host handler calls the launcher with `--nix-overlayfs-open-url URL`. If a
 session of the package is running, the URL is handed to it
 (`urlSchemeOpenCommands`); otherwise the application starts with the URL.
-`--nix-overlayfs-forward-url URL` only hands the URL to a running session and
-exits with status 3 when there is none, without starting anything; a
-dispatcher can use it to find the right application when several share a
-scheme.
+`--nix-overlayfs-forward-url URL` only hands the URL to a running session,
+without starting anything; a dispatcher can use it to find the right
+application when several share a scheme.
+
+A session goes through three phases, recorded in
+`.nix-overlayfs/session-state` (its id, then the phase): `starting` from when
+it holds the session lock until the package's `extraPreLaunchCommands` have
+run, `ready` while the application runs, and `closing` from when the
+application has exited (or the launcher is cleaning up) until the lock is
+free. Only a `ready` session takes URLs, from a queue of its own
+(`.nix-overlayfs/open-requests/<session id>/`). A URL is published by
+writing it to a hidden file in that queue and renaming it to `request.*`, so
+the session never sees a partial request, and the launcher that forwards it
+waits until the session has taken it. If the session starts closing first,
+the forwarder takes the URL back; a URL is never left for a session that is
+over, and a new session starts with an empty queue (queues of earlier
+sessions are removed).
+
+While the session is starting or closing, both options wait for it, up to
+`NIX_OVERLAYFS_URL_FORWARD_WAIT` seconds (default 30, `0` to not wait): when
+it becomes ready the URL is handed to it; when it is over (the lock is free),
+`--nix-overlayfs-open-url` starts a new session with the URL and
+`--nix-overlayfs-forward-url` reports that there is none.
+
+Exit status of both options:
+
+| Status | Meaning |
+| --- | --- |
+| 0 | The running session took the URL. (`--nix-overlayfs-open-url` that started a new session exits with that session's status.) |
+| 1 | The writable layer has a newer [state generation](#state-generation); nothing was written. (Also other errors.) |
+| 2 | The URL is missing. |
+| 3 | `--nix-overlayfs-forward-url` only: no session runs. Try the next application. |
+| 4 | A session is starting or closing and did not become ready (or did not take the URL) within the wait; the URL was taken back. Try again later, do not fall through to another application. |
+
+A normal launch (without these options) while a session runs exits 75 instead
+(see [One session per writable layer](#one-session-per-writable-layer)).
 
 Set `registerHostUrlHandlers = false` (accepted by `mkOverlayfsPackage`,
 `composeWindowsLayers`, `mkWindowsPackage` and `mkWinpkgsPackage`) when the

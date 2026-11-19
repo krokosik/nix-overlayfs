@@ -60,17 +60,17 @@ pkgs.runCommand "state-lock-test"
     # Its session directory is gone again.
     test -z "$(ls -A "$tmpbase")"
 
-    # A URL opened while the session starts (it has not registered yet) is
-    # queued for it instead of starting a second session.
-    ${package}/bin/state-lock --nix-overlayfs-open-url state-lock-test:starting 2> open.log
-    grep -F 'state-lock-test:starting' "$state_dir"/open-requests/request.*
-    test "$(ls -A "$state_dir")" = "$(printf 'open-requests\nsession.lock')"
+    # A URL opened or forwarded while the session is not ready (here: it
+    # never says so) neither starts a second session nor is queued: after
+    # NIX_OVERLAYFS_URL_FORWARD_WAIT seconds the caller is told to retry (4).
+    for mode in open-url forward-url; do
+      status=0
+      NIX_OVERLAYFS_URL_FORWARD_WAIT=1 ${package}/bin/state-lock --nix-overlayfs-$mode state-lock-test:starting \
+        2>/dev/null || status=$?
+      test "$status" -eq 4
+    done
+    test "$(ls -A "$state_dir")" = session.lock
     test ! -e "$appdir/system.reg"
-
-    # Forwarding only still reports that no session is registered.
-    status=0
-    ${package}/bin/state-lock --nix-overlayfs-forward-url state-lock-test:forward 2>/dev/null || status=$?
-    test "$status" -eq 3
 
     # The process that took the lock has exited, but its supervisor still
     # holds the lock.
@@ -96,7 +96,7 @@ pkgs.runCommand "state-lock-test"
     newer=$((${toString overlayfsLib.stateGeneration} + 1))
     printf '%s\n%s\n%s\n' "$newer" /nix/store/newer-launcher 2030-01-01T00:00:00Z > "$state_dir/state-generation"
     cp "$state_dir/state-generation" newer-marker
-    rm -rf "$state_dir/open-requests"
+    printf 'recorded\n' > "$lock"
     status=0
     ${package}/bin/state-lock > newer.log 2>&1 || status=$?
     cat newer.log
@@ -104,6 +104,12 @@ pkgs.runCommand "state-lock-test"
     grep -F "has state generation $newer (written by /nix/store/newer-launcher on 2030-01-01T00:00:00Z)" newer.log
     grep -F "this launcher (${package}) only knows generation ${toString overlayfsLib.stateGeneration}" newer.log
     cmp newer-marker "$state_dir/state-generation"
+    # The lock's pid record is written only after the check.
+    test "$(cat "$lock")" = recorded
+    # URLs are not handed to a session of a newer generation either.
+    status=0
+    ${package}/bin/state-lock --nix-overlayfs-forward-url state-lock-test:newer 2>/dev/null || status=$?
+    test "$status" -eq 1
     test "$(ls -A "$appdir")" = .nix-overlayfs
     test "$(ls -A "$state_dir")" = "$(printf 'session.lock\nstate-generation')"
     test -z "$(ls -A "$tmpbase")"

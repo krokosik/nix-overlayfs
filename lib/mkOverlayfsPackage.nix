@@ -176,21 +176,11 @@ stdenv.mkDerivation {
       # Shared by the entry and the environment script: the running session
       # of this writable layer and the URLs handed to it.
       sessionFunctions = ''
-        nix_overlayfs_load_session_env() {
-          if [ -f "$state_dir/session-env" ]; then
-            # shellcheck disable=SC1091
-            set -a
-            . "$state_dir/session-env"
-            set +a
-          fi
-        }
+        # This session's id: its session directory's name.
+        nix_overlayfs_session_id="''${tempdir##*/}"
 
-        nix_overlayfs_enqueue_url_request() {
-          ${sessions} enqueue-url "$state_dir" "$callback_url"
-        }
-
-        nix_overlayfs_active_session_exists() {
-          ${sessions} active "$state_dir" ${lib.escapeShellArg executablePath}
+        nix_overlayfs_set_session_phase() {
+          ${sessions} set-state "$state_dir" "$nix_overlayfs_session_id" "$1"
         }
       '';
       overlayProcessCommands = ''
@@ -198,7 +188,6 @@ stdenv.mkDerivation {
           ${sessions} overlay-process-exists "$1" ${lib.escapeShellArg executablePath}
         }
       '';
-      activeUrlSchemeOpenInvocation = "nix_overlayfs_enqueue_url_request";
       urlSchemeCommand =
         if urlSchemeOpenCommands != "" then
           ''env HOME="$HOME" WINEPREFIX="$tempdir/overlay" WINEARCH="$WINEARCH" WINEDEBUG="$WINEDEBUG" callback_url="$callback_url" active_overlay="$tempdir/overlay" tempdir="$tempdir" ${pkgs.bash}/bin/bash -c ${lib.escapeShellArg urlSchemeOpenCommands}''
@@ -336,6 +325,8 @@ stdenv.mkDerivation {
         nix_overlayfs_entry_cleanup() {
           local status=$?
           trap - EXIT HUP INT TERM
+          # Takes no more URLs; forwarders take back those it did not take.
+          nix_overlayfs_set_session_phase closing || true
           if [ -n "$nix_overlayfs_supervisor_pid" ]; then
             kill -TERM "$nix_overlayfs_supervisor_pid" 2>/dev/null || true
             wait "$nix_overlayfs_supervisor_pid" 2>/dev/null || true
@@ -366,6 +357,13 @@ stdenv.mkDerivation {
 
         nix_overlayfs_open_url_request=0
         ${lib.optionalString hostIntegration ''
+          # Hands the URL to the session of this writable layer; see
+          # nix-overlayfs-sessions forward-url for the exit status.
+          nix_overlayfs_forward_url() {
+            ${sessions} forward-url "$state_dir" "$callback_url" \
+              "''${NIX_OVERLAYFS_URL_FORWARD_WAIT:-30}" ${toString overlayfsLib.stateGeneration}
+          }
+
           case "''${1:-}" in
             --nix-overlayfs-open-url|--nix-overlayfs-forward-url)
               callback_url="''${2:-}"
@@ -374,16 +372,12 @@ stdenv.mkDerivation {
                 nix_overlayfs_exit_early 2
               fi
 
-              if nix_overlayfs_active_session_exists; then
-                nix_overlayfs_load_session_env
-                ${activeUrlSchemeOpenInvocation}
-                nix_overlayfs_exit_early $?
-              fi
-
-              # Forward only: report that no session runs instead of starting one,
-              # so a dispatcher can try the next application.
-              if [ "$1" = --nix-overlayfs-forward-url ]; then
-                nix_overlayfs_exit_early 3
+              nix_overlayfs_forward_status=0
+              nix_overlayfs_forward_url || nix_overlayfs_forward_status=$?
+              # Forward only: report that no session runs (3) instead of
+              # starting one, so a dispatcher can try the next application.
+              if [ "$nix_overlayfs_forward_status" != 3 ] || [ "$1" = --nix-overlayfs-forward-url ]; then
+                nix_overlayfs_exit_early "$nix_overlayfs_forward_status"
               fi
               nix_overlayfs_open_url_request=1
               ;;
@@ -394,27 +388,31 @@ stdenv.mkDerivation {
         # changes (registry merge, overlay workdir, mount, shadow check). The
         # runtime supervisor gets the descriptor and keeps the lock until the
         # prefix is unmounted; it is closed for every other process, so
-        # nothing left over from a session can hold it.
+        # nothing left over from a session can hold it. Creating the lock
+        # file is the only change before the lock is held. (Up to a second of
+        # waiting: forwarders and the browser broker test the lock briefly.)
         mkdir --parents "$state_dir" || nix_overlayfs_exit_early 1
         exec {nix_overlayfs_state_lock}<>"$state_dir/session.lock" || nix_overlayfs_exit_early 1
-        if ! ${pkgs.util-linux}/bin/flock --nonblock --exclusive "$nix_overlayfs_state_lock"; then
-          if [ "$nix_overlayfs_open_url_request" = 1 ]; then
-            # A session is starting and has not registered yet; its launch
-            # loop takes the URL.
-            nix_overlayfs_enqueue_status=0
-            nix_overlayfs_enqueue_url_request || nix_overlayfs_enqueue_status=$?
-            echo "${basePackageName} is starting; the URL is handed to its session" >&2
-            nix_overlayfs_exit_early "$nix_overlayfs_enqueue_status"
-          fi
+        if ! ${pkgs.util-linux}/bin/flock --wait 1 --exclusive "$nix_overlayfs_state_lock"; then
+          ${lib.optionalString hostIntegration ''
+            if [ "$nix_overlayfs_open_url_request" = 1 ]; then
+              # Another session started meanwhile: hand the URL to it.
+              nix_overlayfs_forward_status=0
+              nix_overlayfs_forward_url || nix_overlayfs_forward_status=$?
+              [ "$nix_overlayfs_forward_status" != 3 ] || nix_overlayfs_forward_status=4
+              nix_overlayfs_exit_early "$nix_overlayfs_forward_status"
+            fi
+          ''}
           echo "error: nix-overlayfs: ${basePackageName} already runs from $appdir:" \
             "$(${overlayfsLib.runtimeScripts.state}/bin/nix-overlayfs-state describe-holder "$state_dir")" >&2
           nix_overlayfs_exit_early 75
         fi
-        printf '%s\n' "$$" > "$state_dir/session.lock"
         # A layer written by a newer launcher is left alone.
         ${overlayfsLib.runtimeScripts.state}/bin/nix-overlayfs-state check-generation \
           "$state_dir" ${toString overlayfsLib.stateGeneration} "__STOREPATH__" \
           || nix_overlayfs_exit_early 1
+        printf '%s\n' "$$" > "$state_dir/session.lock"
+        nix_overlayfs_set_session_phase starting || nix_overlayfs_exit_early 1
 
         mkdir --parents "$appdir" "$tempdir/bind" "$tempdir/overlay" || exit 1
         nix_overlayfs_supervisor_pid=""
@@ -661,7 +659,7 @@ stdenv.mkDerivation {
           nix_overlayfs_process_url_requests() {
             local callback_url=""
 
-            while callback_url="$(${sessions} take-url-request "$state_dir")"; do
+            while callback_url="$(${sessions} take-url-request "$state_dir" "''${tempdir##*/}")"; do
               if ! ( ${urlSchemeOpenInvocation} ); then
                 echo "warning: failed to open URL in active ${basePackageName} Wine prefix: $callback_url" >&2
               fi
@@ -699,17 +697,6 @@ stdenv.mkDerivation {
             launch_pid=$!
           }
 
-          nix_overlayfs_forward_url_to_active_session() {
-            callback_url="$1"
-            if nix_overlayfs_active_session_exists; then
-              nix_overlayfs_load_session_env
-              ${activeUrlSchemeOpenInvocation}
-              return $?
-            fi
-
-            return 1
-          }
-
           nix_overlayfs_write_state_file() {
             local destination="$1"
             local value="$2"
@@ -735,6 +722,8 @@ stdenv.mkDerivation {
               nix_overlayfs_write_state_file "$state_dir/overlay-root" "$tempdir/overlay"
               nix_overlayfs_record_session_env
             ''}
+            # From now on URLs handed to the session are opened in it.
+            ${sessions} set-state "$state_dir" "''${tempdir##*/}" ready || true
           }
 
           nix_overlayfs_run_launch_loop() {
@@ -750,6 +739,10 @@ stdenv.mkDerivation {
               fi
               sleep 1
             done
+
+            # No more URLs; a forwarder takes back one this session did not
+            # take.
+            ${sessions} set-state "$state_dir" "''${tempdir##*/}" closing || true
 
             if [ "$launch_running" = 1 ]; then
               wait "$launch_pid" || launch_status=$?
@@ -767,10 +760,8 @@ stdenv.mkDerivation {
                 exit 2
               fi
 
-              if nix_overlayfs_forward_url_to_active_session "$callback_url"; then
-                exit 0
-              fi
-
+              # The entry handed the URL to a running session if there was
+              # one; this session starts with it.
               nix_overlayfs_prepare_launch_session
               nix_overlayfs_run_launch_loop "$callback_url"
               exit "$?"

@@ -2,8 +2,9 @@
 #   nix-overlayfs-sessions sweep TMPBASE CURRENT_TEMPDIR
 #   nix-overlayfs-sessions active STATE_DIR EXECUTABLE_PATH
 #   nix-overlayfs-sessions overlay-process-exists OVERLAY_ROOT EXECUTABLE_PATH
-#   nix-overlayfs-sessions enqueue-url STATE_DIR URL
-#   nix-overlayfs-sessions take-url-request STATE_DIR
+#   nix-overlayfs-sessions set-state STATE_DIR ID PHASE
+#   nix-overlayfs-sessions forward-url STATE_DIR URL WAIT GENERATION
+#   nix-overlayfs-sessions take-url-request STATE_DIR ID
 #   nix-overlayfs-sessions terminate SESSION_ID TIMEOUT
 #
 # sweep: every launch works in its own TMPBASE/tmp.XXXXXXXXXX directory and
@@ -21,22 +22,42 @@
 # checked across mount namespaces and are left alone, as are directories with
 # anything mounted below them in this namespace.
 #
-# The other commands keep track of the running session of a writable layer,
-# so that a URL opened while it runs reaches it instead of starting another
-# one. STATE_DIR is the layer's .nix-overlayfs directory; the running session
-# writes its launcher's process id to STATE_DIR/session.pid and its mounted
-# prefix to STATE_DIR/overlay-root.
+# The other commands keep track of the session of a writable layer, so that a
+# URL opened while it runs reaches it instead of starting another one.
+# STATE_DIR is the layer's .nix-overlayfs directory. A session exists while
+# STATE_DIR/session.lock is locked (see nix-overlayfs-state); the session
+# records its id and phase in STATE_DIR/session-state (first line the id,
+# second line starting, ready or closing) and takes URLs only from its own
+# queue, STATE_DIR/open-requests/ID.
 #
 # active: whether the session STATE_DIR names still runs: its launcher still
-# has the prefix mounted, or some process runs EXECUTABLE_PATH from it.
+# has the prefix mounted, or some process runs EXECUTABLE_PATH from it. (From
+# launchers before session-state; kept for compatibility.)
 #
 # overlay-process-exists: whether some process runs EXECUTABLE_PATH from the
 # prefix mounted at OVERLAY_ROOT.
 #
-# enqueue-url: hands URL to the running session.
+# set-state: records that session ID is in PHASE (starting, ready, closing).
+# A starting session gets an empty queue of its own; the queues of earlier
+# sessions are removed.
 #
-# take-url-request: claims the next URL handed to the session and prints it;
-# exits 1 when there is none.
+# forward-url: hands URL to the session of STATE_DIR and waits until the
+# session took it. Exit status:
+#   0  the session took the URL;
+#   1  the layer has a newer state generation than GENERATION: nothing was
+#      written;
+#   3  no session (the lock is free);
+#   4  a session is starting or closing, or did not take the URL within
+#      WAIT seconds: the URL was withdrawn, try again later.
+# While the session is starting or closing it waits for it, up to WAIT
+# seconds. A URL is published by renaming a complete file into the queue, so
+# the session never sees a partial one. A session that goes on to close takes
+# no more URLs; one it has not taken is withdrawn (renamed back) and the
+# command waits again, so a URL is never left in the queue of a session that
+# is over.
+#
+# take-url-request: claims the next URL in the queue of session ID and prints
+# it; exits 1 when there is none.
 #
 # terminate: ends the processes left over from a session. The launcher
 # starts every session with NIX_OVERLAYFS_SESSION_ID set to an id of its own
@@ -47,7 +68,7 @@
 # was killed itself in direct mode, where no PID namespace ends the session.
 
 usage() {
-  echo "usage: nix-overlayfs-sessions sweep TMPBASE CURRENT_TEMPDIR | active STATE_DIR EXECUTABLE_PATH | overlay-process-exists OVERLAY_ROOT EXECUTABLE_PATH | enqueue-url STATE_DIR URL | take-url-request STATE_DIR | terminate SESSION_ID TIMEOUT" >&2
+  echo "usage: nix-overlayfs-sessions sweep TMPBASE CURRENT_TEMPDIR | active STATE_DIR EXECUTABLE_PATH | overlay-process-exists OVERLAY_ROOT EXECUTABLE_PATH | set-state STATE_DIR ID PHASE | forward-url STATE_DIR URL WAIT GENERATION | take-url-request STATE_DIR ID | terminate SESSION_ID TIMEOUT" >&2
   exit 2
 }
 
@@ -130,32 +151,131 @@ active() {
   overlay_process_exists "$active_overlay" "$executable_path"
 }
 
-enqueue_url() {
+lock_held() {
+  local lock="$1/session.lock"
+  [ -f "$lock" ] || return 1
+  ! flock --nonblock --shared "$lock" true 2>/dev/null
+}
+
+read_state() {
+  session_id=""
+  session_phase=""
+  {
+    read -r session_id || true
+    read -r session_phase || true
+  } < "$1/session-state" 2>/dev/null || true
+}
+
+set_state() {
+  local state_dir="$1"
+  local id="$2"
+  local phase="$3"
+  local queue=""
+
+  case "$phase" in
+    starting | ready | closing) ;;
+    *) usage ;;
+  esac
+  [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || usage
+
+  if [ "$phase" = starting ]; then
+    mkdir -p "$state_dir/open-requests"
+    for queue in "$state_dir"/open-requests/* "$state_dir"/open-requests/.[!.]*; do
+      [ -e "$queue" ] || [ -L "$queue" ] || continue
+      [ "$queue" != "$state_dir/open-requests/$id" ] || continue
+      rm -rf -- "$queue"
+    done
+    mkdir -p "$state_dir/open-requests/$id"
+  fi
+  printf '%s\n%s\n' "$id" "$phase" > "$state_dir/session-state.$$"
+  mv -f "$state_dir/session-state.$$" "$state_dir/session-state"
+}
+
+# Exits 1 with a message when the layer is of a newer state generation.
+check_generation() {
+  local state_dir="$1"
+  local generation="$2"
+  local found=""
+
+  [ -f "$state_dir/state-generation" ] || return 0
+  read -r found < "$state_dir/state-generation" || true
+  if ! [[ "$found" =~ ^[0-9]{1,9}$ ]] || [ "$((10#$found))" -gt "$generation" ]; then
+    echo "error: nix-overlayfs: the writable layer $(dirname "$state_dir") has state generation ${found:-unknown}, newer than this launcher's ($generation); not handing the URL to its session" >&2
+    return 1
+  fi
+}
+
+# Takes the request back; fails when the session took it first.
+withdraw() {
+  mv "$1" "$1.withdrawn.$$" 2>/dev/null || return 1
+  rm -f "$1.withdrawn.$$"
+}
+
+forward_url() {
   local state_dir="$1"
   local url="$2"
-  local request_file=""
+  local wait_seconds="$3"
+  local generation="$4"
+  local deadline=0
+  local queue=""
+  local pending=""
+  local request=""
+  local session_id=""
+  local session_phase=""
 
-  mkdir -p "$state_dir/open-requests"
-  request_file="$(mktemp "$state_dir/open-requests/request.XXXXXXXXXX")"
-  printf '%s\n' "$url" > "$request_file"
+  [[ "$wait_seconds" =~ ^[0-9]+$ ]] || usage
+  [[ "$generation" =~ ^[0-9]+$ ]] || usage
+  check_generation "$state_dir" "$generation" || return 1
+  deadline=$((SECONDS + wait_seconds))
+
+  while :; do
+    lock_held "$state_dir" || return 3
+    read_state "$state_dir"
+    queue="$state_dir/open-requests/$session_id"
+    if [ "$session_phase" = ready ] && [ -n "$session_id" ] && [ -d "$queue" ]; then
+      pending="$(mktemp "$queue/.pending.XXXXXXXXXX")" || return 4
+      request="$queue/request.${pending##*/.pending.}"
+      if ! { printf '%s\n' "$url" > "$pending" && mv "$pending" "$request"; }; then
+        rm -f "$pending"
+        return 4
+      fi
+      while [ -e "$request" ]; do
+        read_state "$state_dir"
+        if [ "$session_phase" != ready ] || [ "$queue" != "$state_dir/open-requests/$session_id" ] \
+          || ! lock_held "$state_dir"; then
+          # The session closes: take the URL back and wait for the next one.
+          withdraw "$request" || return 0
+          continue 2
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+          withdraw "$request" || return 0
+          return 4
+        fi
+        sleep 0.1
+      done
+      return 0
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || return 4
+    sleep 0.2
+  done
 }
 
 take_url_request() {
   local state_dir="$1"
-  local processing_file=""
+  local id="$2"
+  local claimed=""
   local request_file=""
   local url=""
 
-  mkdir -p "$state_dir/open-requests"
-  for request_file in "$state_dir"/open-requests/request.*; do
+  for request_file in "$state_dir/open-requests/$id"/request.*; do
     [ -f "$request_file" ] || continue
-    processing_file="$request_file.processing.$$"
-    if ! mv "$request_file" "$processing_file" 2>/dev/null; then
+    claimed="$state_dir/open-requests/$id/.claimed.${request_file##*/request.}"
+    if ! mv "$request_file" "$claimed" 2>/dev/null; then
       continue
     fi
 
-    url="$(cat "$processing_file" 2>/dev/null || true)"
-    rm -f "$processing_file"
+    url="$(cat "$claimed" 2>/dev/null || true)"
+    rm -f "$claimed"
     [ -n "$url" ] || continue
 
     printf '%s\n' "$url"
@@ -250,13 +370,17 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || usage
     overlay_process_exists "$2" "$3"
     ;;
-  enqueue-url)
-    [ "$#" -eq 3 ] || usage
-    enqueue_url "$2" "$3"
+  set-state)
+    [ "$#" -eq 4 ] || usage
+    set_state "$2" "$3" "$4"
+    ;;
+  forward-url)
+    [ "$#" -eq 5 ] || usage
+    forward_url "$2" "$3" "$4" "$5"
     ;;
   take-url-request)
-    [ "$#" -eq 2 ] || usage
-    take_url_request "$2"
+    [ "$#" -eq 3 ] || usage
+    take_url_request "$2" "$3"
     ;;
   terminate)
     [ "$#" -eq 3 ] || usage

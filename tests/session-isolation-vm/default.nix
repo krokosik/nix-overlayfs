@@ -38,6 +38,7 @@ else
     '';
 
     app = pkgs.writeShellScript "session-isolation-vm-app" ''
+      printf '%s\n' "''${2:-}" >> "$NIX_OVERLAYFS_TEST_OUT.args"
       ${listFds} > "$NIX_OVERLAYFS_TEST_OUT.app-fds"
       ${pkgs.coreutils}/bin/readlink /proc/self/ns/pid > "$NIX_OVERLAYFS_TEST_OUT.pidns"
       touch "$NIX_OVERLAYFS_TEST_OUT.started"
@@ -111,6 +112,11 @@ else
 
           with subtest(f"{mode}: other launchers find the running session"):
               machine.succeed(f"su - alice -c '${sessions} active {state} /probe'")
+              machine.succeed(f"sed -n 2p {state}/session-state | grep -Fx ready")
+              # A URL forwarded to it is taken: the session opens it (here, by
+              # starting the probe application with it).
+              machine.succeed(f"su - alice -c '{launcher} --nix-overlayfs-forward-url session-isolation:forwarded'")
+              machine.wait_until_succeeds(f"grep -Fx session-isolation:forwarded /tmp/{mode}.args")
               # The layer got the launcher's state generation.
               machine.succeed(f"test \"$(head -n 1 {state}/state-generation)\" = ${toString overlayfsLib.stateGeneration}")
               machine.succeed(f"sed -n 2p {state}/state-generation | grep -Fx ${package}")
