@@ -303,7 +303,7 @@ stdenv.mkDerivation {
           ${overlayfsLib.runtimeScripts.hostBrowserBroker}/bin/nix-overlayfs-host-browser-broker \
             "$host_browser_request_dir" ${
               if hostIntegration then lib.getExe overlayfsLib.hostUrlOpener else "${pkgs.coreutils}/bin/false"
-            } {nix_overlayfs_state_lock}>&- &
+            } "$nix_overlayfs_supervisor_pid" {nix_overlayfs_state_lock}>&- &
           nix_overlayfs_host_browser_broker_pid="$!"
         }
 
@@ -416,7 +416,6 @@ stdenv.mkDerivation {
 
         mkdir --parents "$appdir" "$tempdir/bind" "$tempdir/overlay" || exit 1
         nix_overlayfs_supervisor_pid=""
-        ${lib.optionalString hostIntegration "nix_overlayfs_start_host_browser_broker"}
         trap nix_overlayfs_entry_cleanup EXIT
         trap 'nix_overlayfs_forward_signal HUP' HUP
         trap 'nix_overlayfs_forward_signal INT' INT
@@ -447,6 +446,9 @@ stdenv.mkDerivation {
             "''${supervisor[@]:0:1}" --pid-namespace "''${supervisor[@]:1}" "$@" &
         fi
         nix_overlayfs_supervisor_pid=$!
+        # The broker ends with the supervisor, also when this launcher is
+        # killed and cannot stop it.
+        ${lib.optionalString hostIntegration "nix_overlayfs_start_host_browser_broker"}
         while :; do
           wait "$nix_overlayfs_supervisor_pid"
           launch_status=$?

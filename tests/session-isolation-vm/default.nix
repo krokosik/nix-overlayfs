@@ -133,6 +133,20 @@ else
               machine.succeed("! findmnt -rn -t fuse.fuse-overlayfs")
               machine.fail(f"su - alice -c '${sessions} active {state} /probe'")
 
+          with subtest(f"{mode}: nothing of the session is left when its launcher is killed"):
+              start(mode, f"{mode}-launcher-killed")
+              broker = "pgrep -u alice -f 'nix-overlayfs-host-browser-broker .*session-isolation-vm-base'"
+              machine.succeed(broker)
+              # The launcher alone: the supervisor gets SIGTERM and ends the
+              # session; the host browser broker, which the launcher can no
+              # longer stop, ends with the supervisor.
+              machine.succeed("pkill -KILL -o -u alice -f session-isolation-vm-unwrapped")
+              machine.wait_until_fails(session_processes(), timeout=60)
+              machine.wait_until_fails(broker, timeout=30)
+              machine.wait_until_fails("pgrep -u alice -f nix-overlayfs-runtime-supervisor", timeout=30)
+              machine.succeed(f"su - alice -c 'flock --nonblock {state}/session.lock true'")
+              machine.succeed("! findmnt -rn -t fuse.fuse-overlayfs")
+
           with subtest(f"{mode}: nothing of the session is left when its supervisor is killed"):
               start(mode, f"{mode}-killed")
               # The outermost supervisor (in namespace mode there is a second

@@ -108,6 +108,12 @@ those) before unmounting. A launcher killed together with its supervisor
 override `NIX_OVERLAYFS_PROCESS_TERMINATION_TIMEOUT` accepts a non-negative
 duration with an optional `ms`, `s`, `m`, `h`, or `d` suffix.
 
+Web pages that Wine asks the host to open (Wine's browser hook and the
+`start.exe` shim) go through a broker that runs next to the session, outside
+its namespaces. It ends with the runtime supervisor, so a launcher that is
+killed (and cannot stop it) does not leave it running; browsers it started
+keep running.
+
 Host browser requests use a separate transient user service with
 `ExitType=cgroup`, so asynchronous browser startup and URL-forwarding processes
 can finish after `xdg-open` exits. The service remains active until its remaining

@@ -68,7 +68,27 @@ pkgs.runCommand "host-browser-broker-test" { nativeBuildInputs = [ pkgs.gnugrep 
   grep -Fx -- '--direct https://example.invalid/late' "$OPENED"
   test ! -e "$requests/request.late"
 
+  # It also ends with the process it watches (the session's supervisor),
+  # without a stop file, handling what is left once.
+  rm -f "$requests/.stop"
+  sleep 300 &
+  watched=$!
+  ${broker} "$requests" ${opener} "$watched" &
+  pid=$!
+  sleep 0.5
+  kill -0 "$pid"
+  printf 'https://example.invalid/watched\n' > "$requests/request.watched"
+  kill "$watched"
+  wait "$watched" || true
+  # (A watchdog: if it did not end by itself it is killed, and wait fails.)
+  ( sleep 10; kill "$pid" 2>/dev/null ) &
+  watchdog=$!
+  wait "$pid"
+  kill "$watchdog" 2>/dev/null || true
+  grep -Fx -- '--direct https://example.invalid/watched' "$OPENED"
+
   ! ${broker} "$requests" 2>/dev/null
+  ! ${broker} "$requests" ${opener} 1 2 2>/dev/null
 
   # The launcher runs it for the session and stops it at the end.
   script="${package}/bin/host-browser-broker-unwrapped"
