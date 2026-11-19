@@ -143,7 +143,7 @@ std::optional<Registry> parse_registry(const fs::path &path, std::string &error)
 
 bool write_registry(const fs::path &path, const Registry &registry)
 {
-    std::ofstream out(path);
+    std::ofstream out(path, std::ios::trunc);
     if (!out) return false;
 
     out << "WINE REGISTRY Version " << registry.version << '\n';
@@ -163,23 +163,46 @@ bool write_registry(const fs::path &path, const Registry &registry)
         }
     }
 
-    return true;
+    out.flush();
+    out.close();
+    return !out.fail();
 }
 
-bool merge_one(const fs::path &out_dir, const std::string &reg_name, const std::vector<fs::path> &source_dirs)
+bool same_registry(const Registry &a, const Registry &b)
+{
+    return a.version == b.version && a.location == b.location && a.arch == b.arch && a.keys == b.keys;
+}
+
+/* Merges the hive REG_NAME of the sources (lowest priority first). A source
+   hive that exists but cannot be read or parsed fails the merge: skipping
+   it would drop its values, and when it is the writable layer's own hive,
+   the user's values would be replaced by the layers below. */
+bool merge_one(const std::string &reg_name, const std::vector<fs::path> &source_dirs,
+               std::optional<Registry> &result)
 {
     Registry merged;
     bool have_registry = false;
 
     for (const auto &source_dir : source_dirs) {
         const auto source_path = source_dir / reg_name;
-        if (!fs::is_regular_file(source_path)) continue;
+        std::error_code ec;
+        if (!fs::exists(source_path, ec)) {
+            if (ec) {
+                std::cerr << "error: cannot inspect registry " << source_path << ": " << ec.message() << '\n';
+                return false;
+            }
+            continue;
+        }
+        if (!fs::is_regular_file(source_path, ec)) {
+            std::cerr << "error: registry " << source_path << " is not a regular file\n";
+            return false;
+        }
 
         std::string error;
         auto parsed = parse_registry(source_path, error);
         if (!parsed) {
-            std::cerr << "warning: failed to parse registry layer " << source_path << ": " << error << '\n';
-            continue;
+            std::cerr << "error: failed to parse registry " << source_path << ": " << error << '\n';
+            return false;
         }
 
         if (!have_registry) {
@@ -199,15 +222,7 @@ bool merge_one(const fs::path &out_dir, const std::string &reg_name, const std::
         }
     }
 
-    if (!have_registry) return true;
-
-    fs::create_directories(out_dir);
-    const auto out_path = out_dir / reg_name;
-    if (!write_registry(out_path, merged)) {
-        std::cerr << "error: failed to write " << out_path << '\n';
-        return false;
-    }
-
+    if (have_registry) result = std::move(merged);
     return true;
 }
 
@@ -226,10 +241,49 @@ int main(int argc, char **argv)
         source_dirs.emplace_back(argv[i]);
     }
 
-    for (const std::string reg_name : {"system.reg", "user.reg", "userdef.reg"}) {
-        if (!merge_one(out_dir, reg_name, source_dirs)) {
+    const std::vector<std::string> reg_names = {"system.reg", "user.reg", "userdef.reg"};
+
+    /* Everything is read and merged before anything is written. */
+    std::vector<std::optional<Registry>> merged(reg_names.size());
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        if (!merge_one(reg_names[i], source_dirs, merged[i])) return 1;
+    }
+
+    /* Each hive is written next to its original, read back and compared,
+       and only then renamed over it. */
+    std::error_code ec;
+    fs::create_directories(out_dir, ec);
+    if (ec) {
+        std::cerr << "error: cannot create " << out_dir << ": " << ec.message() << '\n';
+        return 1;
+    }
+    std::vector<fs::path> staged(reg_names.size());
+    auto discard_staged = [&]() {
+        for (const auto &path : staged) {
+            if (!path.empty()) fs::remove(path, ec);
+        }
+    };
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        if (!merged[i]) continue;
+        staged[i] = out_dir / ("." + reg_names[i] + ".nix-overlayfs-new");
+        std::string error;
+        std::optional<Registry> written;
+        if (write_registry(staged[i], *merged[i])) written = parse_registry(staged[i], error);
+        if (!written || !same_registry(*written, *merged[i])) {
+            std::cerr << "error: failed to write " << out_dir / reg_names[i] << '\n';
+            discard_staged();
             return 1;
         }
+    }
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        if (staged[i].empty()) continue;
+        fs::rename(staged[i], out_dir / reg_names[i], ec);
+        if (ec) {
+            std::cerr << "error: failed to replace " << out_dir / reg_names[i] << ": " << ec.message() << '\n';
+            discard_staged();
+            return 1;
+        }
+        staged[i].clear();
     }
 
     return 0;
