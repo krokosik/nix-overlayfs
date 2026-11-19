@@ -116,7 +116,7 @@ pkgs.runCommand "session-sweep-test"
       /exec \{nix_overlayfs_tmpbase_lock\}>&-/ && !unlock { unlock = NR }
       END { exit !(lock && lock < create && create < sweep && sweep < unlock) }
     ' "$script"
-    grep -F 'nix_overlayfs_exit_early $?' "$script"
+    grep -F 'nix_overlayfs_exit_early "$nix_overlayfs_forward_status"' "$script"
     ! grep -Ex '[[:space:]]*exit \$\?' "$script"
 
     touch "$out"
