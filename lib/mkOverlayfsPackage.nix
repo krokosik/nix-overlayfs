@@ -314,7 +314,7 @@ stdenv.mkDerivation {
           ${overlayfsLib.runtimeScripts.hostBrowserBroker}/bin/nix-overlayfs-host-browser-broker \
             "$host_browser_request_dir" ${
               if hostIntegration then lib.getExe overlayfsLib.hostUrlOpener else "${pkgs.coreutils}/bin/false"
-            } &
+            } {nix_overlayfs_state_lock}>&- &
           nix_overlayfs_host_browser_broker_pid="$!"
         }
 
@@ -341,6 +341,9 @@ stdenv.mkDerivation {
             wait "$nix_overlayfs_supervisor_pid" 2>/dev/null || true
             nix_overlayfs_supervisor_pid=""
           fi
+          # Whatever of the session the supervisor could not end (when it was
+          # killed itself, in direct mode, where no PID namespace ends them).
+          ${sessions} terminate "$tempdir" "''${process_termination_timeout:-5s}" || true
           nix_overlayfs_stop_host_browser_broker || true
           if ${namespace} unmount "$tempdir/overlay"; then
             rm -r "$tempdir"
@@ -361,6 +364,7 @@ stdenv.mkDerivation {
           exit "$status"
         }
 
+        nix_overlayfs_open_url_request=0
         ${lib.optionalString hostIntegration ''
           case "''${1:-}" in
             --nix-overlayfs-open-url|--nix-overlayfs-forward-url)
@@ -381,9 +385,32 @@ stdenv.mkDerivation {
               if [ "$1" = --nix-overlayfs-forward-url ]; then
                 nix_overlayfs_exit_early 3
               fi
+              nix_overlayfs_open_url_request=1
               ;;
           esac
         ''}
+
+        # One session per writable layer: lock it before anything in it
+        # changes (registry merge, overlay workdir, mount, shadow check). The
+        # runtime supervisor gets the descriptor and keeps the lock until the
+        # prefix is unmounted; it is closed for every other process, so
+        # nothing left over from a session can hold it.
+        mkdir --parents "$state_dir" || nix_overlayfs_exit_early 1
+        exec {nix_overlayfs_state_lock}<>"$state_dir/session.lock" || nix_overlayfs_exit_early 1
+        if ! ${pkgs.util-linux}/bin/flock --nonblock --exclusive "$nix_overlayfs_state_lock"; then
+          if [ "$nix_overlayfs_open_url_request" = 1 ]; then
+            # A session is starting and has not registered yet; its launch
+            # loop takes the URL.
+            nix_overlayfs_enqueue_status=0
+            nix_overlayfs_enqueue_url_request || nix_overlayfs_enqueue_status=$?
+            echo "${basePackageName} is starting; the URL is handed to its session" >&2
+            nix_overlayfs_exit_early "$nix_overlayfs_enqueue_status"
+          fi
+          echo "error: nix-overlayfs: ${basePackageName} already runs from $appdir:" \
+            "$(${overlayfsLib.runtimeScripts.state}/bin/nix-overlayfs-state describe-holder "$state_dir")" >&2
+          nix_overlayfs_exit_early 75
+        fi
+        printf '%s\n' "$$" > "$state_dir/session.lock"
 
         mkdir --parents "$appdir" "$tempdir/bind" "$tempdir/overlay" || exit 1
         nix_overlayfs_supervisor_pid=""
@@ -402,16 +429,20 @@ stdenv.mkDerivation {
           --term-timeout "$process_termination_timeout"
           --mountpoint "$tempdir/overlay"
           --label ${lib.escapeShellArg basePackageName}
+          --state-lock-fd "$nix_overlayfs_state_lock"
           --
           "__STOREPATH__/libexec/${executableName}-setupEnv.sh"
         )
 
+        # Every process of the session carries the session's id, so the
+        # cleanup can find any that are left.
         if [ "$namespace_mode" = direct ]; then
           export NIX_OVERLAYFS_DIRECT_MODE=1
-          "''${supervisor[@]}" "$@" &
+          NIX_OVERLAYFS_SESSION_ID="$tempdir" "''${supervisor[@]}" "$@" &
         else
           unset NIX_OVERLAYFS_DIRECT_MODE
-          ${pkgs.util-linux}/bin/unshare --map-root-user --mount "''${supervisor[@]}" "$@" &
+          NIX_OVERLAYFS_SESSION_ID="$tempdir" ${pkgs.util-linux}/bin/unshare --map-root-user --mount \
+            "''${supervisor[@]:0:1}" --pid-namespace "''${supervisor[@]:1}" "$@" &
         fi
         nix_overlayfs_supervisor_pid=$!
         while :; do
@@ -695,7 +726,8 @@ stdenv.mkDerivation {
             ${extraPreLaunchCommands}
 
             ${lib.optionalString hostIntegration ''
-              nix_overlayfs_write_state_file "$state_dir/session.pid" "$$"
+              # In a PID namespace, the session's id outside it.
+              nix_overlayfs_write_state_file "$state_dir/session.pid" "''${NIX_OVERLAYFS_SESSION_PID:-$$}"
               nix_overlayfs_write_state_file "$state_dir/overlay-root" "$tempdir/overlay"
               nix_overlayfs_record_session_env
             ''}

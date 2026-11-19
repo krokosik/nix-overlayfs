@@ -86,6 +86,22 @@ cleanly, then terminates and reaps only processes descended from that session
 before unmounting its prefix. This contains double-forked and native helper
 processes without selecting processes globally by command line or environment.
 
+In namespace mode the session, including the package's
+`extraPreLaunchCommands` and any services they start in the background, also
+runs in its own PID namespace (with its own `/proc`), whose init is the
+runtime supervisor. When that init exits, or is killed (it gets `SIGKILL` when
+the outer supervisor dies), the kernel kills every process left in the
+namespace, so nothing of a session can outlive it. If the namespace cannot be
+set up, the supervisor says so and supervises the session as in direct mode.
+`.nix-overlayfs/session.pid` records the init's process id as seen from
+outside, so other launchers still find the running session.
+
+Direct mode has no PID namespace. There, every process of a session carries
+the session's own id in `NIX_OVERLAYFS_SESSION_ID`, and when the supervisor
+was killed itself, the launcher terminates the processes that carry it (only
+those) before unmounting. A launcher killed together with its supervisor
+(`SIGKILL` to both) leaves them running.
+
 `processTerminationTimeout` controls the grace period between `SIGTERM` and
 `SIGKILL` and defaults to 5 seconds. It is accepted by `mkOverlayfsPackage`,
 `composeWindowsLayers`, `mkWindowsPackage`, and `mkWinpkgsPackage`. The runtime
@@ -106,6 +122,33 @@ A persistent runtime keeps its writable layer in
 mounted above the read-only Nix layers. Files in the writable layer always win,
 so the launcher guards against changes that would hide newer Nix layers after
 a rebuild.
+
+### One session per writable layer
+
+Before it changes anything in the writable layer (merging the registry, the
+overlay work directory, the shadowed-files check, the mount), a launch takes an
+exclusive `flock` on `<writable layer>/.nix-overlayfs/session.lock` and writes
+its process id into it. The runtime supervisor keeps the lock until the
+session has ended and its prefix is unmounted. The descriptor is closed for
+every process of the session (close-on-exec), so a process left over from a
+session cannot keep the layer locked.
+
+A second launch while the lock is held changes nothing and exits with status
+75, naming the holder:
+
+```
+error: nix-overlayfs: <package> already runs from <writable layer>: process 1234 (<command line>)
+```
+
+URLs are not affected: `--nix-overlayfs-open-url` and
+`--nix-overlayfs-forward-url` hand the URL to a running session without taking
+the lock, and `--nix-overlayfs-open-url` while a session is still starting
+(before it registered in `session.pid`) queues the URL for that session
+instead of starting another.
+
+Packages that took a lock of their own in `extraPreLaunchCommands` to keep two
+sessions apart no longer need it; such a lock came too late (after the registry
+merge and the mount) and was inherited by Wine.
 
 ### Wine prefix updates
 
@@ -600,7 +643,9 @@ standalone programs in `lib/runtime/`, built with `writeShellApplication` so
 `overlayfsLib.runtimeScripts`:
 
 - `nix-overlayfs-sessions`: session directories of killed launchers, the
-  running session of a writable layer, URLs handed to it;
+  running session of a writable layer, URLs handed to it, processes left
+  over from a session in direct mode;
+- `nix-overlayfs-state`: who holds a writable layer's session lock;
 - `nix-overlayfs-url-handlers`: the host URL handler `.desktop` entry, its
   `open-url` script and the scheme defaults;
 - `nix-overlayfs-forget-desktop-entry`: removes a deleted entry from
@@ -629,8 +674,13 @@ launchers: `lifecycle-vm` installs a fake Windows application, launches it
 (its URL handler is registered), switches to a version whose Nix layer changed
 and checks that nothing in the writable layer hides the new layer file, and
 finally launches it with `registerHostUrlHandlers = false`, after which
-`~/.local/share/applications` holds nothing of it. `nix flake check` runs all
-of them.
+`~/.local/share/applications` holds nothing of it. `session-isolation-vm`
+runs a session whose pre-launch commands start a background service, in
+namespace and direct mode: a second launch is refused and names the session,
+neither the application nor the service has the state lock open, and nothing
+of the session is left when it ends or when its supervisor is killed.
+`state-lock` checks in the build sandbox that a refused launch changes nothing
+in the writable layer. `nix flake check` runs all of them.
 
 ## Acknowledgements
 

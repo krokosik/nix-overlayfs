@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <math.h>
 #include <poll.h>
@@ -9,8 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
+#include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/signalfd.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -32,6 +36,8 @@ struct options {
     double term_timeout_seconds;
     const char *mountpoint;
     const char *label;
+    int state_lock_fd;
+    bool pid_namespace;
     char **command;
 };
 
@@ -47,7 +53,7 @@ static void usage(FILE *stream, const char *program)
 {
     fprintf(stream,
             "usage: %s --term-timeout DURATION [--mountpoint PATH] "
-            "[--label LABEL] -- COMMAND [ARG ...]\n",
+            "[--label LABEL] [--state-lock-fd FD] [--pid-namespace] -- COMMAND [ARG ...]\n",
             program);
 }
 
@@ -78,6 +84,8 @@ static bool parse_options(int argc, char **argv, struct options *options)
     options->term_timeout_seconds = -1.0;
     options->mountpoint = NULL;
     options->label = "runtime session";
+    options->state_lock_fd = -1;
+    options->pid_namespace = false;
     options->command = NULL;
 
     for (int index = 1; index < argc; index++) {
@@ -96,6 +104,18 @@ static bool parse_options(int argc, char **argv, struct options *options)
         }
         if (!strcmp(argv[index], "--label") && index + 1 < argc) {
             options->label = argv[++index];
+            continue;
+        }
+        if (!strcmp(argv[index], "--state-lock-fd") && index + 1 < argc) {
+            char *end = NULL;
+            errno = 0;
+            long fd = strtol(argv[++index], &end, 10);
+            if (errno || end == argv[index] || *end || fd < 0 || fd > INT_MAX) return false;
+            options->state_lock_fd = (int)fd;
+            continue;
+        }
+        if (!strcmp(argv[index], "--pid-namespace")) {
+            options->pid_namespace = true;
             continue;
         }
         return false;
@@ -407,6 +427,132 @@ static bool unmount_runtime(const char *mountpoint)
     return false;
 }
 
+/* Runs the session's command and waits for it, then ends what is left of the
+   session (every descendant of this process) and unmounts MOUNTPOINT. */
+static int supervise(const struct options *options, int signal_fd, const char *mountpoint)
+{
+    pid_t primary_pid = fork();
+    if (primary_pid < 0) {
+        perror("fork");
+        return supervisor_failure;
+    }
+    if (primary_pid == 0) {
+        sigprocmask(SIG_SETMASK, &original_signal_mask, NULL);
+        execvp(options->command[0], options->command);
+        fprintf(stderr, "error: nix-overlayfs: cannot execute %s: %s\n",
+                options->command[0], strerror(errno));
+        _exit(errno == ENOENT ? 127 : 126);
+    }
+
+    int primary_status = 0;
+    bool force_kill = wait_for_primary(signal_fd, primary_pid, &primary_status);
+    bool drained = drain_descendants(signal_fd, options->term_timeout_seconds, options->label,
+                                     force_kill);
+    bool unmounted = unmount_runtime(mountpoint);
+
+    int result = decoded_wait_status(primary_status);
+    if (!drained || !unmounted) {
+        if (!unmounted) {
+            fprintf(stderr, "error: nix-overlayfs: failed to unmount runtime at %s\n",
+                    mountpoint);
+        }
+        if (result == 0) result = supervisor_failure;
+    }
+    return result;
+}
+
+static const char session_pid_variable[] = "NIX_OVERLAYFS_SESSION_PID";
+
+/* In the new PID namespace, as its init: a mount namespace of its own with a
+   /proc that shows the namespace's processes (Wine and the supervision below
+   read /proc with the process ids they know). NIX_OVERLAYFS_SESSION_PID is
+   set to this process's id outside the namespace, read before the new /proc
+   hides it: the launcher records it, so other launchers can find the session
+   from outside. */
+static bool enter_pid_namespace(void)
+{
+    char self[64];
+    ssize_t length = readlink("/proc/self", self, sizeof(self) - 1);
+    if (length <= 0) {
+        fprintf(stderr, "warning: nix-overlayfs: cannot read /proc/self: %s\n", strerror(errno));
+        return false;
+    }
+    self[length] = '\0';
+
+    if (unshare(CLONE_NEWNS) < 0
+        || mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) < 0
+        || mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC, NULL) < 0) {
+        fprintf(stderr, "warning: nix-overlayfs: cannot mount /proc for a PID namespace: %s\n",
+                strerror(errno));
+        return false;
+    }
+    if (setenv(session_pid_variable, self, 1) < 0) return false;
+    return true;
+}
+
+/* Runs the session as init of a new PID namespace. When that init exits, or
+   is killed together with this process (it gets SIGKILL when this process
+   dies), the kernel kills every process left in the namespace, so nothing of
+   the session can outlive it, whatever it does to escape its parent.
+   Returns false, before anything ran, when the namespace cannot be set up;
+   the caller then supervises the session itself. */
+static bool run_in_pid_namespace(const struct options *options, int signal_fd, int *result)
+{
+    int ready[2];
+    if (pipe2(ready, O_CLOEXEC) < 0) {
+        perror("pipe2");
+        return false;
+    }
+
+    /* Like fork(), but the child is the first process of a new namespace. */
+    pid_t init_pid = (pid_t)syscall(SYS_clone, CLONE_NEWPID | SIGCHLD, 0, 0, 0, 0);
+    if (init_pid < 0) {
+        fprintf(stderr, "warning: nix-overlayfs: cannot create a PID namespace: %s; "
+                "supervising the session without one\n", strerror(errno));
+        close(ready[0]);
+        close(ready[1]);
+        return false;
+    }
+
+    if (init_pid == 0) {
+        close(ready[0]);
+        if (prctl(PR_SET_PDEATHSIG, SIGKILL) < 0 || !enter_pid_namespace()) _exit(supervisor_failure);
+        char byte = 1;
+        if (write(ready[1], &byte, 1) != 1) _exit(supervisor_failure);
+        close(ready[1]);
+        /* The mount was made in the namespace's own mount namespace, which
+           ends with it; the outer supervisor unmounts as well. */
+        _exit(supervise(options, signal_fd, NULL));
+    }
+
+    close(ready[1]);
+    char byte;
+    ssize_t length;
+    do {
+        length = read(ready[0], &byte, 1);
+    } while (length < 0 && errno == EINTR);
+    close(ready[0]);
+
+    int status = 0;
+    if (length != 1) {
+        while (waitpid(init_pid, &status, 0) < 0 && errno == EINTR) {}
+        fprintf(stderr, "warning: nix-overlayfs: supervising the session without a PID namespace\n");
+        return false;
+    }
+
+    /* Signals for the session go to its init, which passes them on. */
+    wait_for_primary(signal_fd, init_pid, &status);
+    reap_all_available();
+    bool unmounted = unmount_runtime(options->mountpoint);
+    *result = decoded_wait_status(status);
+    if (!unmounted) {
+        fprintf(stderr, "error: nix-overlayfs: failed to unmount runtime at %s\n",
+                options->mountpoint);
+        if (*result == 0) *result = supervisor_failure;
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     struct options options;
@@ -415,6 +561,17 @@ int main(int argc, char **argv)
     if (!parse_options(argc, argv, &options)) {
         usage(stderr, argv[0]);
         return 2;
+    }
+
+    /* The launcher's lock on the writable layer: held for as long as this
+       process lives, but not passed on to the session's processes. */
+    if (options.state_lock_fd >= 0) {
+        int flags = fcntl(options.state_lock_fd, F_GETFD);
+        if (flags < 0 || fcntl(options.state_lock_fd, F_SETFD, flags | FD_CLOEXEC) < 0) {
+            fprintf(stderr, "error: nix-overlayfs: invalid state lock descriptor %d: %s\n",
+                    options.state_lock_fd, strerror(errno));
+            return supervisor_failure;
+        }
     }
 
     FILE *children_file = open_children_file();
@@ -450,34 +607,16 @@ int main(int argc, char **argv)
         return supervisor_failure;
     }
 
-    pid_t primary_pid = fork();
-    if (primary_pid < 0) {
-        perror("fork");
-        close(signal_fd);
-        return supervisor_failure;
-    }
-    if (primary_pid == 0) {
-        sigprocmask(SIG_SETMASK, &original_signal_mask, NULL);
-        execvp(options.command[0], options.command);
-        fprintf(stderr, "error: nix-overlayfs: cannot execute %s: %s\n",
-                options.command[0], strerror(errno));
-        _exit(errno == ENOENT ? 127 : 126);
-    }
-
-    int primary_status = 0;
-    bool force_kill = wait_for_primary(signal_fd, primary_pid, &primary_status);
-    bool drained = drain_descendants(signal_fd, options.term_timeout_seconds, options.label,
-                                     force_kill);
-    bool unmounted = unmount_runtime(options.mountpoint);
-    close(signal_fd);
-
-    int result = decoded_wait_status(primary_status);
-    if (!drained || !unmounted) {
-        if (!unmounted) {
-            fprintf(stderr, "error: nix-overlayfs: failed to unmount runtime at %s\n",
-                    options.mountpoint);
+    if (options.pid_namespace) {
+        int result;
+        if (run_in_pid_namespace(&options, signal_fd, &result)) {
+            close(signal_fd);
+            return result;
         }
-        if (result == 0) result = supervisor_failure;
     }
+
+    unsetenv(session_pid_variable);
+    int result = supervise(&options, signal_fd, options.mountpoint);
+    close(signal_fd);
     return result;
 }
