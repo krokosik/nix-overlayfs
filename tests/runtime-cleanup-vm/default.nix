@@ -66,6 +66,9 @@ else
         home = "/home/alice";
       };
       boot.kernel.sysctl."kernel.unprivileged_userns_clone" = 1;
+      # The direct mode mounts the layers without a user namespace, through
+      # the setuid fusermount3 (opt-in since NixOS 26.11).
+      programs.fuse.enable = true;
     };
 
     testScript = ''

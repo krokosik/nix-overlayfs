@@ -77,6 +77,9 @@ at runtime with `NIX_OVERLAYFS_NAMESPACE_MODE=auto|required|direct`.
 Direct mode keeps its mount under the user's private nix-overlayfs temporary
 directory and performs the normal explicit FUSE unmount and temporary-directory
 cleanup. It does not disable host AppArmor or user-namespace policy.
+Without a user namespace the mount goes through the setuid `fusermount3`,
+which NixOS installs only with `programs.fuse.enable = true` (opt-in since
+NixOS 26.11); if the mount fails, the launcher stops with an error.
 
 ## Runtime process supervision
 
