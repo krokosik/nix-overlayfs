@@ -61,6 +61,9 @@ else
         isNormalUser = true;
         home = "/home/alice";
       };
+      # namespaceMode = "direct" mounts the layers without a user namespace,
+      # through the setuid fusermount3 (opt-in since NixOS 26.11).
+      programs.fuse.enable = true;
       environment.systemPackages = [ pkgs.xorg-server ];
     };
 

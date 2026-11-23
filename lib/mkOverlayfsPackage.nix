@@ -343,7 +343,8 @@ stdenv.mkDerivation {
           fi
           nix_overlayfs_stop_host_browser_broker || true
           if ${namespace} unmount "$tempdir/overlay"; then
-            rm -r "$tempdir"
+            # -f: never ask about read-only files on a terminal.
+            rm -rf -- "$tempdir"
             # Under the directory's lock, so no launcher is creating a session in it.
             if exec {nix_overlayfs_tmpbase_lock}<"$tmpbase" 2>/dev/null; then
               ${pkgs.util-linux}/bin/flock "$nix_overlayfs_tmpbase_lock" \
@@ -499,11 +500,24 @@ stdenv.mkDerivation {
             ${upperLayer} install-start-shim "$appdir" ${overlayfsLib.hostStartShim}
           ''}
 
-          ${pkgs.fuse-overlayfs}/bin/fuse-overlayfs \
+          # Without the mount Wine would find an empty directory, create a new
+          # prefix in it and look for the application there in vain.
+          if ! ${pkgs.fuse-overlayfs}/bin/fuse-overlayfs \
             -o "lowerdir=$lowerdirs,upperdir=$appdir,workdir=$overlay_workdir,squash_to_uid=$(${pkgs.coreutils}/bin/id --user),squash_to_gid=$(${pkgs.coreutils}/bin/id --group)" \
-            "$tempdir/overlay"
+            "$tempdir/overlay"; then
+            echo "error: nix-overlayfs: could not mount the layers of ${basePackageName} at $tempdir/overlay" >&2
+            if [ "''${NIX_OVERLAYFS_DIRECT_MODE:-0}" = 1 ]; then
+              echo "error: nix-overlayfs: without a user namespace the mount needs a setuid fusermount3 (on NixOS: programs.fuse.enable = true)" >&2
+            fi
+            # The shim goes into the writable layer before the mount, and the
+            # session's cleanup that removes it is not set up yet.
+            ${lib.optionalString hostIntegration ''
+              ${upperLayer} remove-start-shim "$appdir" "$tempdir/overlay" ${overlayfsLib.hostStartShim}
+            ''}
+            exit 1
+          fi
 
-          cd "$tempdir/overlay/"
+          cd "$tempdir/overlay/" || exit 1
 
           ${if session == null then "" else renderEnvExports session.env}
 
