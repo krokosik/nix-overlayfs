@@ -509,6 +509,11 @@ stdenv.mkDerivation {
             if [ "''${NIX_OVERLAYFS_DIRECT_MODE:-0}" = 1 ]; then
               echo "error: nix-overlayfs: without a user namespace the mount needs a setuid fusermount3 (on NixOS: programs.fuse.enable = true)" >&2
             fi
+            # The shim goes into the writable layer before the mount, and the
+            # session's cleanup that removes it is not set up yet.
+            ${lib.optionalString hostIntegration ''
+              ${upperLayer} remove-start-shim "$appdir" "$tempdir/overlay" ${overlayfsLib.hostStartShim}
+            ''}
             exit 1
           fi
 
