@@ -1,4 +1,4 @@
-# The check webview2-pinned runs after the installer, against fake prefixes:
+# The check the webview2 layer runs after the installer, against fake prefixes:
 # only the requested version directory counts, and its msedgewebview2.exe must
 # be a regular file with the PE machine of the requested architecture.
 { pkgs, ... }:
@@ -7,7 +7,7 @@ let
     wine = pkgs.wineWow64Packages.unstableFull;
     windowsArch = "wow64";
   };
-  inherit (modules.webview2-pinned) checkInstall;
+  inherit (modules.webview2) checkInstall;
 in
 pkgs.runCommand "webview2-install-check" { } ''
   set -euo pipefail
