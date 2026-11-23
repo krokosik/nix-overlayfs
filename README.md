@@ -507,6 +507,93 @@ All three set their DLLs to `native` in the registry. Used as
 changing their version rebuilds only the launcher, not the installation
 below.
 
+## WebView2
+
+The module scopes provide WebView2 Runtime layers the way they provide DXVK:
+
+- `webview2`: the x64 Evergreen Standalone Installer of WebView2
+  154.0.4258.62, fetched from Microsoft by a pinned URL and hash. Unfree
+  (`meta.license`), so evaluating it needs `allowUnfree` or a matching
+  `allowUnfreePredicate`.
+- `webview2Release { version; src; architecture; managedRuntime; }`: the same
+  layer from another installer, pinned by its hash (below).
+- `webview2-winget`: the installer winget-pkgs' manifest names today.
+  Evaluating it fetches the whole `microsoft/winget-pkgs` repository and reads
+  the manifest from a build result (import from derivation), so it is slow and
+  fails under `--option allow-import-from-derivation false`. Prefer `webview2`.
+
+`webview2` used to be the winget-based module. A package that used it gets the
+pinned 154.0.4258.62 now; to keep the old behaviour use `webview2-winget`, or
+pin the version it needs with `webview2Release`.
+
+`webview2` runs `<installer> /silent /install`, waits at most 60
+seconds (`wineserverWaitTimeout`) for the Wine processes the installer leaves
+behind (then kills them), and fails the build unless `Program Files` or
+`Program Files (x86)` has `Microsoft\EdgeWebView\Application\<version>\msedgewebview2.exe`
+as a regular file whose PE header names the installer's architecture
+(Machine `0x8664` for x64, `0x14c` for x86, `0xaa64` for arm64), with
+`<version>` the one the layer is declared with; other version directories are
+ignored. The check is `passthru.checkInstall`
+(`nix-overlayfs-webview2-check-install PREFIX VERSION ARCHITECTURE`), tested
+against fake prefixes in `tests/webview2-install-check`. Built on 2026-11-19 with
+`managedRuntime = "external"` on `nativeModules` (x86_64-linux), the layer is
+912 MB; the installer leaves Wine processes behind, so the 60-second wait
+ends with a kill.
+
+A layer is the difference against the base environment it was installed on,
+so it has to use the `managedRuntime` of the package it goes into (see
+[Headless and ephemeral runtimes](#headless-and-ephemeral-runtimes)). For a
+package that gets .NET from `dotnet-framework-4-8`:
+
+```nix
+let
+  modules = pkgs.nix-overlayfs.moduleScopes.nativeModules;
+in
+overlayfsLib.mkWindowsPackage {
+  inherit (modules) runtime;
+  managedRuntime = "external";
+  overlayDependencies = [
+    modules.dotnet-framework-4-8
+    (modules.webview2.override { managedRuntime = "external"; })
+  ];
+  # ...
+}
+```
+
+Without the override the package still evaluates (only layers built on the
+`"external"` base are checked), but its WebView2 layer was then installed
+into a prefix with Wine Mono, which the package's own prefix does not have.
+The other way round is refused: an `"external"` WebView2 layer in a package
+with Wine Mono fails evaluation.
+
+Another installer (a newer release, or the x86 or arm64 one for a runtime that
+prefers it), pinned by its hash:
+
+```nix
+modules.webview2Release {
+  version = "<version>";
+  src = fetchurl {
+    url = "https://msedge.sf.dl.delivery.mp.microsoft.com/.../MicrosoftEdgeWebView2RuntimeInstallerX64.exe";
+    hash = "sha256-...";
+    meta.license = lib.licenses.unfree;
+  };
+  architecture = "x64";        # default; must be one the runtime prefers
+  managedRuntime = "external"; # default "auto"
+}
+```
+
+`webview2.override` accepts `installer`, `installerVersion`,
+`installerArchitecture`, `managedRuntime`, `packageName` and
+`wineserverWaitTimeout` (not `src`/`version`, which callPackage would fill
+from nixpkgs). An installer whose architecture the runtime does not
+prefer (`runtime.preferredInstallerArchitecture`) fails when the layer's
+derivation is evaluated. The `webview2` check evaluates both layers,
+their base environments and their use in packages, without winget-pkgs.
+
+`mkWinpkgsPackage` passes `managedRuntime` and its other `mkWindowsPackage`
+options on as well, so `modules.webview2-winget.override { managedRuntime =
+"external"; }` also works.
+
 ## Migrating from `composeWineLayers`
 
 The old `composeWineLayers` entrypoint has been replaced by

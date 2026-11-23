@@ -10,22 +10,14 @@
 
   overlayfsLib,
 }:
-{
+# Every other argument (managedRuntime, hostIntegration, unshareInstall,
+# postInstall, ...) is passed on to mkWindowsPackage unchanged.
+args@{
   runtime,
   launchRuntime ? runtime,
   packageName,
-  executableName ? "",
-  executablePath ? "",
   version ? "latest",
-  overlayDependencies ? [ ],
-  extraPathsToRemove ? [ ],
   silentFlags ? null,
-  launchVncServer ? false,
-  processTerminationTimeout ? 5,
-  wineserverWaitTimeout ? null,
-  runtimeEnvVars ? { },
-  dllOverrides ? { },
-  registerHostUrlHandlers ? true,
   ...
 }:
 let
@@ -80,32 +72,25 @@ let
   # Use supplied silent flags or default to predefined ones
   silentFlag = if silentFlags != null then silentFlags else silentFlagsIndex.${installerType};
 in
-mkWindowsPackage {
-  inherit runtime launchRuntime;
+mkWindowsPackage (
+  # `version` selects the manifest here; mkWindowsPackage gets the manifest's.
+  builtins.removeAttrs args [
+    "version"
+    "silentFlags"
+  ]
+  // {
+    inherit runtime launchRuntime;
 
-  # Extract metadata from manifest
-  pname = manifest.PackageIdentifier;
-  version = manifest.PackageVersion;
+    # Extract metadata from manifest
+    pname = manifest.PackageIdentifier;
+    version = manifest.PackageVersion;
 
-  # Download selected installer
-  src = fetchurl {
-    url = installer.InstallerUrl;
-    sha256 = "${installer.InstallerSha256}";
-  };
+    # Download selected installer
+    src = fetchurl {
+      url = installer.InstallerUrl;
+      sha256 = "${installer.InstallerSha256}";
+    };
 
-  silentFlags = silentFlag;
-
-  inherit
-    packageName
-    executableName
-    executablePath
-    overlayDependencies
-    extraPathsToRemove
-    launchVncServer
-    processTerminationTimeout
-    wineserverWaitTimeout
-    runtimeEnvVars
-    dllOverrides
-    registerHostUrlHandlers
-    ;
-}
+    silentFlags = silentFlag;
+  }
+)
