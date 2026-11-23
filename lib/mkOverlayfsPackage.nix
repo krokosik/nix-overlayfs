@@ -374,11 +374,14 @@ stdenv.mkDerivation {
 
               nix_overlayfs_forward_status=0
               nix_overlayfs_forward_url || nix_overlayfs_forward_status=$?
-              # Forward only: report that no session runs (3) instead of
-              # starting one, so a dispatcher can try the next application.
-              if [ "$nix_overlayfs_forward_status" != 3 ] || [ "$1" = --nix-overlayfs-forward-url ]; then
-                nix_overlayfs_exit_early "$nix_overlayfs_forward_status"
-              fi
+              # No session (3), or the one there ended before it took the
+              # URL (5): open-url starts a session with it. Forward only
+              # reports the status instead, so a dispatcher can try the next
+              # application (3) or start this one with the URL (5).
+              case "$nix_overlayfs_forward_status" in
+                3 | 5) [ "$1" = --nix-overlayfs-open-url ] || nix_overlayfs_exit_early "$nix_overlayfs_forward_status" ;;
+                *) nix_overlayfs_exit_early "$nix_overlayfs_forward_status" ;;
+              esac
               nix_overlayfs_open_url_request=1
               ;;
           esac
@@ -399,7 +402,10 @@ stdenv.mkDerivation {
               # Another session started meanwhile: hand the URL to it.
               nix_overlayfs_forward_status=0
               nix_overlayfs_forward_url || nix_overlayfs_forward_status=$?
-              [ "$nix_overlayfs_forward_status" != 3 ] || nix_overlayfs_forward_status=4
+              # (Ended again meanwhile: let the caller retry.)
+              case "$nix_overlayfs_forward_status" in
+                3 | 5) nix_overlayfs_forward_status=4 ;;
+              esac
               nix_overlayfs_exit_early "$nix_overlayfs_forward_status"
             fi
           ''}

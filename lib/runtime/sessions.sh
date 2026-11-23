@@ -43,21 +43,28 @@
 #
 # forward-url: hands URL to the session of STATE_DIR and waits until the
 # session took it. Exit status:
-#   0  the session took the URL;
+#   0  the session took the URL (it acknowledged this very request);
 #   1  the layer has a newer state generation than GENERATION: nothing was
 #      written;
-#   3  no session (the lock is free);
+#   3  no session was there when the command started (the lock was free);
 #   4  a session is starting or closing, or did not take the URL within
-#      WAIT seconds: the URL was withdrawn, try again later.
+#      WAIT seconds: the URL was withdrawn, try again later;
+#   5  a session was there when the command started, but ended before it
+#      took the URL: the URL was withdrawn. It belonged to this layer; start
+#      a session with it rather than trying another application.
 # While the session is starting or closing it waits for it, up to WAIT
 # seconds. A URL is published by renaming a complete file into the queue, so
-# the session never sees a partial one. A session that goes on to close takes
-# no more URLs; one it has not taken is withdrawn (renamed back) and the
-# command waits again, so a URL is never left in the queue of a session that
-# is over.
+# the session never sees a partial one. Delivery needs a positive
+# acknowledgment: the session that takes request.TOKEN writes its id to
+# STATE_DIR/open-acks/TOKEN; a request that merely disappears (removed with
+# the queue of a session that is over) does not count, and the URL goes to
+# the next session. A session that goes on to close takes no more URLs; one
+# it has not taken is withdrawn (renamed back) and the command waits again,
+# so a URL is never left in the queue of a session that is over.
 #
-# take-url-request: claims the next URL in the queue of session ID and prints
-# it; exits 1 when there is none.
+# take-url-request: claims the next URL in the queue of session ID,
+# acknowledges it (STATE_DIR/open-acks/TOKEN) and prints it; exits 1 when
+# there is none.
 #
 # terminate: ends the processes left over from a session. The launcher
 # starts every session with NIX_OVERLAYFS_SESSION_ID set to an id of its own
@@ -211,6 +218,30 @@ withdraw() {
   rm -f "$1.withdrawn.$$"
 }
 
+# Prints 0 when session SESSION took request TOKEN (its acknowledgment
+# names it), removing the acknowledgment; waits up to two seconds for one,
+# since the session writes it right after taking the request.
+acknowledged() {
+  local state_dir="$1"
+  local token="$2"
+  local session="$3"
+  local ack="$state_dir/open-acks/$token"
+  local by=""
+  local tries=0
+
+  while [ "$tries" -lt 20 ]; do
+    if [ -f "$ack" ]; then
+      read -r by < "$ack" || true
+      rm -f "$ack"
+      [ "$by" = "$session" ]
+      return
+    fi
+    sleep 0.1
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
 forward_url() {
   local state_dir="$1"
   local url="$2"
@@ -220,6 +251,8 @@ forward_url() {
   local queue=""
   local pending=""
   local request=""
+  local token=""
+  local target=""
   local session_id=""
   local session_phase=""
 
@@ -228,32 +261,55 @@ forward_url() {
   check_generation "$state_dir" "$generation" || return 1
   deadline=$((SECONDS + wait_seconds))
 
+  # 3 only when no session was there at the start; once one was, its end
+  # before it took the URL is 5.
+  lock_held "$state_dir" || return 3
+
   while :; do
-    lock_held "$state_dir" || return 3
+    lock_held "$state_dir" || return 5
     read_state "$state_dir"
     queue="$state_dir/open-requests/$session_id"
     if [ "$session_phase" = ready ] && [ -n "$session_id" ] && [ -d "$queue" ]; then
-      pending="$(mktemp "$queue/.pending.XXXXXXXXXX")" || return 4
-      request="$queue/request.${pending##*/.pending.}"
-      if ! { printf '%s\n' "$url" > "$pending" && mv "$pending" "$request"; }; then
-        rm -f "$pending"
-        return 4
+      target="$session_id"
+      mkdir -p "$state_dir/open-acks" || return 4
+      # The queue can go away meanwhile (the session was replaced): look
+      # again.
+      if ! pending="$(mktemp "$queue/.pending.XXXXXXXXXX" 2>/dev/null)"; then
+        [ "$SECONDS" -lt "$deadline" ] || return 4
+        sleep 0.2
+        continue
       fi
-      while [ -e "$request" ]; do
+      token="${pending##*/.pending.}"
+      request="$queue/request.$token"
+      rm -f "$state_dir/open-acks/$token"
+      if ! { printf '%s\n' "$url" > "$pending" && mv "$pending" "$request"; } 2>/dev/null; then
+        rm -f "$pending"
+        [ "$SECONDS" -lt "$deadline" ] || return 4
+        sleep 0.2
+        continue
+      fi
+      while :; do
+        if [ ! -e "$request" ]; then
+          # Taken by the session, or removed with its queue: only the
+          # session's acknowledgment counts.
+          acknowledged "$state_dir" "$token" "$target" && return 0
+          continue 2
+        fi
         read_state "$state_dir"
-        if [ "$session_phase" != ready ] || [ "$queue" != "$state_dir/open-requests/$session_id" ] \
+        if [ "$session_phase" != ready ] || [ "$session_id" != "$target" ] \
           || ! lock_held "$state_dir"; then
           # The session closes: take the URL back and wait for the next one.
-          withdraw "$request" || return 0
+          if withdraw "$request"; then continue 2; fi
+          acknowledged "$state_dir" "$token" "$target" && return 0
           continue 2
         fi
         if [ "$SECONDS" -ge "$deadline" ]; then
-          withdraw "$request" || return 0
+          if withdraw "$request"; then return 4; fi
+          acknowledged "$state_dir" "$token" "$target" && return 0
           return 4
         fi
         sleep 0.1
       done
-      return 0
     fi
     [ "$SECONDS" -lt "$deadline" ] || return 4
     sleep 0.2
@@ -265,11 +321,13 @@ take_url_request() {
   local id="$2"
   local claimed=""
   local request_file=""
+  local token=""
   local url=""
 
   for request_file in "$state_dir/open-requests/$id"/request.*; do
     [ -f "$request_file" ] || continue
-    claimed="$state_dir/open-requests/$id/.claimed.${request_file##*/request.}"
+    token="${request_file##*/request.}"
+    claimed="$state_dir/open-requests/$id/.claimed.$token"
     if ! mv "$request_file" "$claimed" 2>/dev/null; then
       continue
     fi
@@ -277,6 +335,11 @@ take_url_request() {
     url="$(cat "$claimed" 2>/dev/null || true)"
     rm -f "$claimed"
     [ -n "$url" ] || continue
+
+    # The acknowledgment the forwarder waits for, naming this session.
+    mkdir -p "$state_dir/open-acks"
+    printf '%s\n' "$id" > "$state_dir/open-acks/.$token.$$"
+    mv -f "$state_dir/open-acks/.$token.$$" "$state_dir/open-acks/$token"
 
     printf '%s\n' "$url"
     return 0

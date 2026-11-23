@@ -277,7 +277,13 @@ free. Only a `ready` session takes URLs, from a queue of its own
 (`.nix-overlayfs/open-requests/<session id>/`). A URL is published by
 writing it to a hidden file in that queue and renaming it to `request.*`, so
 the session never sees a partial request, and the launcher that forwards it
-waits until the session has taken it. If the session starts closing first,
+waits until the session has taken it. Taking it means a positive
+acknowledgment: the session writes its id to
+`.nix-overlayfs/open-acks/<request token>`, and the forwarder accepts only an
+acknowledgment from the session it handed the URL to. A request that merely
+disappears (removed with the queue of a session that ended, when the next one
+starts) is not delivered; the forwarder goes on with the next session. If the
+session starts closing first,
 the forwarder takes the URL back; a URL is never left for a session that is
 over, and a new session starts with an empty queue (queues of earlier
 sessions are removed).
@@ -286,7 +292,8 @@ While the session is starting or closing, both options wait for it, up to
 `NIX_OVERLAYFS_URL_FORWARD_WAIT` seconds (default 30, `0` to not wait): when
 it becomes ready the URL is handed to it; when it is over (the lock is free),
 `--nix-overlayfs-open-url` starts a new session with the URL and
-`--nix-overlayfs-forward-url` reports that there is none.
+`--nix-overlayfs-forward-url` reports that the session ended (5). Status 3
+means only that no session was there when the command started.
 
 Exit status of both options:
 
@@ -295,11 +302,13 @@ Exit status of both options:
 | 0 | The running session took the URL. (`--nix-overlayfs-open-url` that started a new session exits with that session's status.) |
 | 1 | The writable layer has a newer [state generation](#state-generation); nothing was written. (Also other errors.) |
 | 2 | The URL is missing. |
-| 3 | `--nix-overlayfs-forward-url` only: no session runs. Try the next application. |
+| 3 | `--nix-overlayfs-forward-url` only: no session of this layer was there when the command started. Try the next application. |
 | 4 | A session is starting or closing and did not become ready (or did not take the URL) within the wait; the URL was taken back. Try again later, do not fall through to another application. |
+| 5 | `--nix-overlayfs-forward-url` only: a session of this layer was there (starting, ready or closing) when the command started, but ended before it took the URL; the URL was taken back. The URL belongs to this application: start it with the URL (for example with `--nix-overlayfs-open-url`), do not try the next one. |
+| 75 | Not these options: a normal launch while a session runs (below). |
 
-A normal launch (without these options) while a session runs exits 75 instead
-(see [One session per writable layer](#one-session-per-writable-layer)).
+A normal launch (without these options) while a session runs exits 75 (see
+[One session per writable layer](#one-session-per-writable-layer)).
 
 Set `registerHostUrlHandlers = false` (accepted by `mkOverlayfsPackage`,
 `composeWindowsLayers`, `mkWindowsPackage` and `mkWinpkgsPackage`) when the

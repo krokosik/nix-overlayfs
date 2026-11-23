@@ -55,6 +55,10 @@ pkgs.runCommand "session-state-test"
     printf '%s\n' 'app://one?a=1&b=2' app://two | diff -u - <(printf '%s\n' "''${taken[@]}" | sort)
     test "$(ls -A "$queue")" = .pending.c
     rm "$queue/.pending.c"
+    # Each request taken is acknowledged with the session's id.
+    test "$(ls "$state/open-acks")" = "$(printf 'a\nb')"
+    test "$(cat "$state/open-acks/a")" = tmp.one
+    rm -r "$state/open-acks"
 
     # forward-url: no session at all.
     status=0
@@ -65,6 +69,18 @@ pkgs.runCommand "session-state-test"
     status=0
     ${sessions} forward-url "$state" app://x 5 1 || status=$?
     test "$status" -eq 3
+
+    # Prints the first request in tmp.one's queue. (The builder's shell has
+    # nullglob on, so a glob with ls would list the current directory.)
+    first_request() {
+      local file=""
+      for file in "$queue"/request.*; do
+        [ -e "$file" ] || continue
+        printf '%s\n' "$file"
+        return 0
+      done
+      return 1
+    }
 
     # A session holds the lock (-o: the lock goes with flock, not sleep).
     flock -o "$state/session.lock" sleep 300 &
@@ -89,6 +105,8 @@ pkgs.runCommand "session-state-test"
     wait "$consumer"
     test "$(cat took)" = 'app://ready?x=1'
     test -z "$(ls -A "$queue")"
+    # The forwarder removed the session's acknowledgment.
+    test -z "$(ls -A "$state/open-acks")"
 
     # Ready, but the session does not take it within the wait: withdrawn, 4.
     status=0
@@ -97,11 +115,11 @@ pkgs.runCommand "session-state-test"
     test -z "$(ls -A "$queue")"
 
     # The session closes before it takes the URL: the forwarder takes it back
-    # and waits; once the session is over there is none (3), and nothing is
-    # left for a later session.
+    # and waits; once the session is over it reports that the session there
+    # ended (5, not 3), and nothing is left for a later session.
     ${sessions} forward-url "$state" app://closing 20 1 > /dev/null &
     forwarder=$!
-    until ls "$queue"/request.* >/dev/null 2>&1; do sleep 0.05; done
+    until first_request > /dev/null; do sleep 0.05; done
     ${sessions} set-state "$state" tmp.one closing
     sleep 0.5
     test -z "$(ls -A "$queue")"
@@ -109,7 +127,7 @@ pkgs.runCommand "session-state-test"
     wait "$holder" || true
     status=0
     wait "$forwarder" || status=$?
-    test "$status" -eq 3
+    test "$status" -eq 5
     test -z "$(ls -A "$queue")"
 
     # Closing: retry later.
@@ -120,7 +138,67 @@ pkgs.runCommand "session-state-test"
     ${sessions} forward-url "$state" app://late 0 1 || status=$?
     test "$status" -eq 4
 
+    # 4, then the session ends during the wait: 5 (it was there), not 3.
+    ${sessions} forward-url "$state" app://ending 20 1 &
+    forwarder=$!
+    # (Time for it to see the session; it publishes nothing while waiting.)
+    sleep 2
+    kill "$holder"
+    wait "$holder" || true
+    status=0
+    wait "$forwarder" || status=$?
+    test "$status" -eq 5
+
+    flock -o "$state/session.lock" sleep 300 &
+    holder=$!
+    while flock --nonblock "$state/session.lock" true; do sleep 0.05; done
+
+    # The session is replaced between publication and acknowledgment: tmp.one
+    # does not take the URL, tmp.two starts and removes tmp.one's queue with
+    # the request in it. Its disappearance is not delivery: the forwarder
+    # waits for the new session and, as it never becomes ready, reports 4.
+    ${sessions} set-state "$state" tmp.one starting
+    ${sessions} set-state "$state" tmp.one ready
+    ${sessions} forward-url "$state" app://replaced 3 1 &
+    forwarder=$!
+    until first_request > /dev/null; do sleep 0.05; done
+    ${sessions} set-state "$state" tmp.two starting
+    status=0
+    wait "$forwarder" || status=$?
+    test "$status" -eq 4
+    test -z "$(ls -A "$state/open-requests/tmp.two")"
+
+    # The same, but the new session becomes ready: the URL goes to it.
+    ${sessions} set-state "$state" tmp.one starting
+    ${sessions} set-state "$state" tmp.one ready
+    ${sessions} forward-url "$state" app://moved 20 1 &
+    forwarder=$!
+    until first_request > /dev/null; do sleep 0.05; done
+    ${sessions} set-state "$state" tmp.two starting
+    sleep 0.5
+    ${sessions} set-state "$state" tmp.two ready
+    until url="$(${sessions} take-url-request "$state" tmp.two)"; do sleep 0.1; done
+    test "$url" = app://moved
+    wait "$forwarder"
+    test -z "$(ls -A "$state/open-acks")"
+
+    # An acknowledgment from another session does not count either.
+    ${sessions} set-state "$state" tmp.one starting
+    ${sessions} set-state "$state" tmp.one ready
+    ${sessions} forward-url "$state" app://foreign 2 1 &
+    forwarder=$!
+    until first_request > /dev/null; do sleep 0.05; done
+    request="$(first_request)"
+    token="''${request##*/request.}"
+    mv "$request" "$queue/.claimed.$token"
+    printf 'tmp.other\n' > "$state/open-acks/$token"
+    status=0
+    wait "$forwarder" || status=$?
+    test "$status" -eq 4
+    rm -f "$queue/.claimed.$token" "$state/open-acks/$token"
+
     # A layer of a newer state generation: refused, nothing written.
+    ${sessions} set-state "$state" tmp.one starting
     ${sessions} set-state "$state" tmp.one ready
     printf '2\n/nix/store/newer\n' > "$state/state-generation"
     status=0
