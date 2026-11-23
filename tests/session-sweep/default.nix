@@ -74,6 +74,31 @@ pkgs.runCommand "session-sweep-test"
     test ! -e "$base/tmp.held"
     test -d "$base/tmp.legacy"
 
+    # terminate ends the processes that carry the session's id, also those
+    # ignoring SIGTERM, and only them.
+    NIX_OVERLAYFS_SESSION_ID=/tmp/session sleep 300 &
+    plain=$!
+    NIX_OVERLAYFS_SESSION_ID=/tmp/session bash -c 'trap "" TERM; while :; do sleep 0.1; done' &
+    stubborn=$!
+    NIX_OVERLAYFS_SESSION_ID=/tmp/session-other sleep 300 &
+    other=$!
+    sleep 300 &
+    unmarked=$!
+    sleep 0.2
+    ${sessions} terminate /tmp/session 300ms 2> terminate.log
+    grep -F 'terminating processes left over from the session' terminate.log
+    for pid in "$plain" "$stubborn"; do
+      wait "$pid" || true
+      ! kill -0 "$pid" 2>/dev/null
+    done
+    kill -0 "$other"
+    kill -0 "$unmarked"
+    ${sessions} terminate /tmp/session 1s 2> terminate-none.log
+    test ! -s terminate-none.log
+    kill "$other" "$unmarked"
+    ! ${sessions} terminate /tmp/session 5x 2>/dev/null
+    ! ${sessions} terminate "" 1s 2>/dev/null
+
     ! ${sessions} 2>/dev/null
     ! ${sessions} sweep "$base" 2>/dev/null
     ! ${sessions} claim "$base/tmp.current" 2>/dev/null
@@ -91,7 +116,7 @@ pkgs.runCommand "session-sweep-test"
       /exec \{nix_overlayfs_tmpbase_lock\}>&-/ && !unlock { unlock = NR }
       END { exit !(lock && lock < create && create < sweep && sweep < unlock) }
     ' "$script"
-    grep -F 'nix_overlayfs_exit_early $?' "$script"
+    grep -F 'nix_overlayfs_exit_early "$nix_overlayfs_forward_status"' "$script"
     ! grep -Ex '[[:space:]]*exit \$\?' "$script"
 
     touch "$out"

@@ -82,6 +82,43 @@ pkgs.runCommand "registry-helpers-test" { nativeBuildInputs = [ pkgs.gnugrep ]; 
   ${registry} merge "$PWD/app" state/registry-sources tmp/registry-sources "$PWD/low" "$PWD/high" "$PWD/app"
   grep -F 'Software\\again' app/system.reg
 
+  # A failed merge does not stop the launch, but is not recorded: the next
+  # launch merges again. (A directory in place of user.reg cannot be written.)
+  mkdir failapp failstate
+  mkdir failapp/user.reg
+  ${registry} merge "$PWD/failapp" failstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/failapp" 2> fail.log
+  grep -F 'merged again on the next launch' fail.log
+  test ! -e failstate/registry-sources
+  rmdir failapp/user.reg
+  ${registry} merge "$PWD/failapp" failstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/failapp"
+  test -f failapp/user.reg
+  printf '%s\n' "$PWD/low" | diff -u - failstate/registry-sources
+  # A merge that fails later drops the earlier record as well.
+  rm failapp/user.reg
+  mkdir failapp/user.reg
+  ${registry} merge "$PWD/failapp" failstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/failapp" 2>/dev/null
+  test ! -e failstate/registry-sources
+
+  # A writable hive that cannot be parsed is not replaced by the layers below:
+  # the merge fails, nothing is written, no signature is recorded, and the
+  # launch goes on.
+  mkdir badapp badstate
+  printf 'WINE REGISTRY Version 2\n;; All keys relative to REGISTRY\\\\User\\\\S-1-5-21-0-0-0-1000\n\n[Software\\\\Mine] 1\n"kept"="1"\nthis line is not a value\n' > badapp/user.reg
+  cp badapp/user.reg bad-user.reg
+  ${registry} merge "$PWD/badapp" badstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/badapp" 2> bad.log
+  cat bad.log
+  grep -F 'failed to parse registry' bad.log
+  cmp bad-user.reg badapp/user.reg
+  test ! -e badapp/system.reg
+  test ! -e badstate/registry-sources
+  test -z "$(find badapp -name '.*.nix-overlayfs-new')"
+  # Once it is readable again, its values win over the layers.
+  sed -i '/this line is not a value/d' badapp/user.reg
+  ${registry} merge "$PWD/badapp" badstate/registry-sources tmp/registry-sources "$PWD/low" "$PWD/badapp"
+  grep -Fx '"kept"="1"' badapp/user.reg
+  grep -F 'Software\\low' badapp/user.reg
+  test -s badstate/registry-sources
+
   ! ${registry} 2>/dev/null
   ! ${registry} merge "$PWD/app" state/registry-sources 2>/dev/null
   ! ${registry} upsert-section user.reg 2>/dev/null

@@ -7,7 +7,9 @@
 # (system.reg, user.reg, userdef.reg), merged from the registry files of the
 # Nix layers and APPDIR itself (SOURCEs, lowest priority first). Writes the
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
-# differ from SIGNATURE (the last merge) or a registry file is missing.
+# differ from SIGNATURE (the last successful merge) or a registry file is
+# missing. A failed merge removes SIGNATURE, so the next call merges again;
+# it still exits 0, so the launch goes on.
 #
 # upsert-section: replaces the key SECTION of the Wine registry file REGISTRY
 # (for example Software\\Wine\\WineBrowser, with doubled backslashes as in the
@@ -44,9 +46,14 @@ merge() {
   fi
 
   # A failed merge does not stop the launch (merge-wine-registries reports
-  # its own errors).
-  merge-wine-registries "$appdir" "$@" || true
-  cp -f "$signature_next" "$signature"
+  # its own errors), but it is not recorded either: the next launch merges
+  # again.
+  if merge-wine-registries "$appdir" "$@"; then
+    cp -f "$signature_next" "$signature"
+  else
+    echo "warning: nix-overlayfs: merging the registry of $appdir failed; it is merged again on the next launch" >&2
+    rm -f "$signature"
+  fi
 }
 
 upsert_section() {

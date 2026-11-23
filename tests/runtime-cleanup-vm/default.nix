@@ -93,8 +93,13 @@ else
           machine.succeed(f"test $(wc -l < {prefix}.post) -eq 1")
           machine.succeed(f"grep -F 'terminating remaining processes' {prefix}.log")
           machine.succeed(f"test -s {prefix}.replacement")
-          for suffix in ["root", "replacement", "stubborn"]:
-              machine.succeed(f"! kill -0 $(cat {prefix}.{suffix}) 2>/dev/null")
+          # In namespace mode the recorded ids are those inside the session's
+          # PID namespace, so look for the processes themselves.
+          machine.succeed("! pgrep -u alice -f 'runtime-cleanup-vm-(term-respawn|stubborn)'")
+          machine.succeed("! pgrep -u alice -x sleep")
+          if mode == "direct":
+              for suffix in ["root", "replacement", "stubborn"]:
+                  machine.succeed(f"! kill -0 $(cat {prefix}.{suffix}) 2>/dev/null")
           machine.succeed("test ! -e /run/user/1000/nix-overlayfs")
           machine.succeed("! findmnt -rn -t fuse.fuse-overlayfs")
     '';

@@ -14,6 +14,7 @@ pkgs.lib.makeScope newScope (
   self: with self; {
     scripts = callPackage ./scripts { };
     runtimeScripts = callPackage ./runtime { };
+    stateGeneration = import ./state-generation.nix;
     dllOverrides = import ./dll-overrides.nix { inherit (pkgs) lib; };
     managedRuntime = import ./managed-runtime.nix { inherit (pkgs) lib; };
     launchRuntime = import ./launch-runtime.nix { inherit (pkgs) lib; };

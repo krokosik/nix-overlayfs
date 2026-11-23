@@ -46,6 +46,12 @@ let
       text = builtins.readFile ./sessions.sh;
     };
 
+    state = writeShellApplication {
+      name = "nix-overlayfs-state";
+      runtimeInputs = [ coreutils ];
+      text = builtins.readFile ./state.sh;
+    };
+
     forgetDesktopEntry = writeShellApplication {
       name = "nix-overlayfs-forget-desktop-entry";
       runtimeInputs = [
