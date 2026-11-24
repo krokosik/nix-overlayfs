@@ -594,6 +594,64 @@ their base environments and their use in packages, without winget-pkgs.
 options on as well, so `modules.webview2-winget.override { managedRuntime =
 "external"; }` also works.
 
+## Native applications
+
+Proprietary Linux applications have the same problem as Windows ones: the
+installer is slow and the installation is large. When a package installs and
+patches in one derivation, it runs the installer again whenever any library
+that it is patched for changes. `mkNativeInstallLayer` and `mkNativePackage`
+split the two steps.
+
+**The install layer** (`mkNativeInstallLayer`) holds what the vendor's
+installer writes, without patches. Its only inputs are the installer and
+`stdenvNoCC`, so no library that the application uses at run time is an
+input.
+
+- In text files, the layer's own store path is replaced by
+  `overlayfsLib.nativeInstallRootPlaceholder`. Absolute symlinks into the
+  layer are made relative. As a result, the layer refers to nothing in the
+  store.
+- With `outputHash` set, the layer is a fixed-output derivation. Then even a
+  new `stdenvNoCC` does not rebuild it. Nix also ignores changes to its recipe
+  until the hash changes.
+- A fixed-output layer needs an installer that writes the same files on every
+  run. To check this, build the layer with `nix build --rebuild`.
+
+**The package** (`mkNativePackage`) recreates the layer's directories and
+symlinks its files. It copies only the files that it has to change:
+
+- ELF files that need patching. These are dynamic executables, which need a
+  new interpreter, and files that need a library that the layer does not
+  provide where the file looks for it. A file looks in the `$ORIGIN` entries
+  of its own RPATH, in its own directory, and in `libraryDirs` (the
+  directories that the application puts on `LD_LIBRARY_PATH`). Other
+  libraries come from `libraries`, or else from a copy elsewhere in the layer.
+  The file's original RPATH entries stay first, so the layer's own libraries
+  are found first, as on other distributions.
+- Executable scripts, which need their shebangs patched. Many launchers also
+  find their installation with `readlink -e "$0"`, which only works on a copy.
+- Files that contain the install path.
+- Files that match a pattern in `copyFiles`. Use it for files that a program
+  locates by their canonical path (`realpath`, Java's `getCanonicalPath`).
+  Through a symlink, such a program would end up in the unpatched layer.
+  `copyFiles = [ "*" ]` copies every file.
+
+On file systems that support reflinks (btrfs, XFS), the copies share their
+data with the install layer, so copying costs almost no time or space.
+`postBuild` runs after patching, and `makeWrapper` is available in it.
+
+The package needs nothing at run time: there is no mount, no writable layer
+and no session lock. It runs like any other package, and any number of its
+processes can run at once.
+
+For example, Wolfram Mathematica 15.0.1 is packaged this way in a separate
+flake, because it is unfree and needs its installer. Its install layer is
+10 GB and takes about 2 minutes to build. After a library update, only the
+package is rebuilt. On btrfs this takes about 1 minute and adds about 2 GB of
+patched ELF files to the store. The package copies every file
+(`copyFiles = [ "*" ]`), because the front end starts a sandboxed kernel
+that only reads files whose canonical path is inside the installation.
+
 ## Migrating from `composeWineLayers`
 
 The old `composeWineLayers` entrypoint has been replaced by

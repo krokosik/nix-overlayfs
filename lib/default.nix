@@ -27,6 +27,11 @@ pkgs.lib.makeScope newScope (
     mkWindowsPackage = callPackage ./mkWindowsPackage.nix { };
     mkWinpkgsPackage = callPackage ./mkWinpkgsPackage.nix { };
     mkFileLayer = callPackage ./mkFileLayer.nix { };
+    # Native (Linux) applications: an install layer built from the vendor
+    # installer alone, and the package that patches it for NixOS.
+    nativeInstallRootPlaceholder = "@nix-overlayfs-native-install-root@";
+    mkNativeInstallLayer = callPackage ./native/install-layer.nix { };
+    mkNativePackage = callPackage ./native/package.nix { };
     diffs = {
       system = ./diffs/system.json.diff;
       user = ./diffs/user.json.diff;
