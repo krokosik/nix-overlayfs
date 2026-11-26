@@ -21,8 +21,8 @@
 # missing. A failed merge removes SIGNATURE, so the next call merges again;
 # it still exits 0, so the launch goes on. The exception is a merge stopped
 # in the middle of replacing the hives (its journal is left): that is
-# completed first, and if it cannot be, merge exits 1, and the launch must
-# not go on, since Wine would write over hives the next launch replaces.
+# completed first. If it cannot be, merge exits 1 and the launch must not go
+# on, since Wine would write over hives that the next launch replaces.
 #
 # upsert-section: replaces the key SECTION of the Wine registry file REGISTRY
 # (for example Software\\Wine\\WineBrowser, with doubled backslashes as in the

@@ -273,19 +273,19 @@ without the writable layer). For each value:
 So a value that the user never touched follows the layers when a rebuilt layer
 changes, adds or removes it, and a value that the user changed stays.
 
-Keys and values are matched as Wine matches them: key paths and value names
-without regard to case, with the case mapping of the Wine the launcher runs
-(its `l_intl.nls`, the table wineserver itself uses; `mkWindowsPackage` and
-`composeWindowsLayers` pass it as `registryCaseTable`, and without it only
-ASCII letters are matched without case), `@` as the empty name, escapes
-decoded as Wine decodes them. Values are compared by type and data, read as
+Keys and values are matched as Wine matches them. Key paths and value names
+are compared without regard to case, using the case mapping of the Wine that
+the launcher runs: its `l_intl.nls`, the table that wineserver itself uses.
+`mkWindowsPackage` and `composeWindowsLayers` pass it as `registryCaseTable`;
+without it, only ASCII letters are matched without case. `@` is the empty name,
+and escapes are decoded as Wine decodes them. Values are compared by type and data, read as
 Wine's registry loader reads them (`get_data_type` and `load_value` in
 `server/registry.c`): `"a"`, `str:"a"` and `hex(1):61,00,00,00` are the same
 `REG_SZ`; `str(2):"a"` and `hex(2):61,00,00,00` are the same `REG_EXPAND_SZ`
 (Wine saves terminated strings in string form); `dword:1`, `dword:00000001`
-and `hex(4):01,00,00,00` the same `REG_DWORD`; spaces around `=` and between
+and `hex(4):01,00,00,00` are the same `REG_DWORD`; spaces around `=` and between
 hex bytes, and where long hex values are broken over lines, do not matter.
-Text Wine would not load is compared as it is. A
+Text that Wine would not load is compared as it is. A
 different type is a different value, so `REG_SZ` `"1"` and `REG_DWORD` `1`
 differ. The merged hive keeps the text of the side that won. A key without values follows the
 same rules: a key that the user deleted stays deleted, and a key that the layers
@@ -306,8 +306,8 @@ top and record it anew.
 
 Each commit also writes `.nix-overlayfs/registry-base.binding`: the fingerprints
 of the signature and of the base record's manifest it wrote. When the signature
-names other layers than the base record was made for, only what can be traced
-to the last commit is trusted, and the merge warns:
+names other layers than those that the base record was made for, only what can
+be traced to the last commit is trusted, and the merge warns:
 
 - The signature is the commit's, the base record is not (another state's, or
   replaced): the base is rebuilt from the layers the signature names, which are
@@ -315,10 +315,10 @@ to the last commit is trusted, and the merge warns:
 - The base record is the commit's, the signature is not (a launcher without base
   records merged since, or the file was edited): the base record still says
   what the layers gave for every value it has, since such a merge keeps the
-  writable value over its layers'. A value it lacks is taken as the layers' only
-  if the layers the signature names give it and can have been merged into the
-  writable hive (they exist, and every value they give is in it); otherwise
-  only the base record is used.
+  writable value over its layers'. A value that the base record lacks is taken
+  as the layers' only if the layers named by the signature give it and can have
+  been merged into the writable hive (they exist, and every value that they give
+  is in it); otherwise only the base record is used.
 - Neither can be traced (or, in the first case, the named layers are gone): the
   history is unknown, and the merge goes as without a record, in the direction
   that loses nothing of the user's: the writable values win once, and the
@@ -343,9 +343,10 @@ moves, with fingerprints of the staged files and of what they replace, and
 ends with a checksum. Recovery checks all of it before it moves anything: a
 damaged or cut-off journal, a staged file that is missing or not the one
 named, or a hive changed since the merge stopped changes nothing and stops
-the launch with an error naming what to remove to start over (the journal,
-the base record and its `.new`/`.old`, the staged `.*.nix-overlayfs-new`
-files; the next merge then runs as a first merge, writable values on top). Otherwise a failed merge keeps the old base, has
+the launch with an error that names what to remove to start over: the journal,
+the base record and its `.new`/`.old`, and the staged `.*.nix-overlayfs-new`
+files. The next merge then runs as a first merge, with the writable values on
+top. Otherwise a failed merge keeps the old base, has
 no signature and lets the launch go on; the next launch merges again. Delete
 `.nix-overlayfs/registry-sources` to merge on the next launch anyway.
 

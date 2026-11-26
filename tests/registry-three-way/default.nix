@@ -260,9 +260,10 @@ merge hist "$PWD/layer-new3" 2> base.log
 grep -F 'the layer signature was rewritten' base.log
 has hist '"New"="3"'
 has hist '"Untouched"="3"'
-# Another state's base record (valid, but not the one this state's last
-# commit wrote), whose value happens to be the user's, does not give the
-# user's value to the layers: it is rebuilt from the signature's layers.
+# Another state's base record is valid, but it is not the one that this
+# state's last commit wrote, and its value happens to be the user's. It must
+# not give the user's value to the layers: it is rebuilt from the signature's
+# layers.
 merge own "$PWD/layer1"
 sed -i 's/^"Changed"="1"$/"Changed"="user"/' own/user.reg
 layer layer-user <<'EOF'
@@ -389,9 +390,9 @@ merge abort "$PWD/layer2"
 test ! -e abort-state/registry-base.journal
 has abort '"Untouched"="2"'
 
-# Recovery checks what it completes against the journal: a damaged journal,
-# a missing staged hive or one from another transaction, or a hive changed
-# since, change nothing and stop the launch, with what to remove.
+# Recovery checks what it completes against the journal. A damaged journal,
+# a missing staged hive or one from another transaction, or a hive that has
+# changed since, changes nothing and stops the launch, with what to remove.
 pending() {
   rm -rf "$1" "$1-state"
   merge "$1" "$PWD/layer1"

@@ -879,7 +879,7 @@ stdenv.mkDerivation {
     in
     ''
       ${lib.optionalString (registryCaseTable != null) ''
-        # The registry merge needs the Wine's case mapping table.
+        # The registry merge needs the case mapping table of its Wine.
         test -f ${registryCaseTable}
       ''}
       mkdir bin libexec
