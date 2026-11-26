@@ -5,7 +5,11 @@
 #
 # merge: the writable layer APPDIR holds the prefix's registry files
 # (system.reg, user.reg, userdef.reg), merged from the registry files of the
-# Nix layers and APPDIR itself (SOURCEs, lowest priority first). Writes the
+# Nix layers (SOURCEs, lowest priority first; APPDIR among them is skipped)
+# and APPDIR's own. The merge is three-way: registry-base/ next to SIGNATURE
+# keeps what the layers gave at the last successful merge, so a value the
+# user left as it was follows the layers, and one the user changed, added or
+# deleted stays as the user left it (see merge-wine-registries). Writes the
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
 # differ from SIGNATURE (the last successful merge) or a registry file is
 # missing. A failed merge removes SIGNATURE, so the next call merges again;
@@ -27,13 +31,19 @@ merge() {
   local appdir="$1"
   local signature="$2"
   local signature_next="$3"
+  local base=""
   local source=""
+  local -a layers=()
   shift 3
+  base="$(dirname "$signature")/registry-base"
 
   for source in "$@"; do
-    if [ "$source" = "$appdir" ]; then
-      continue
+    if [ "$source" != "$appdir" ]; then
+      layers+=("$source")
     fi
+  done
+
+  for source in "${layers[@]}"; do
     readlink -f "$source" || true
   done > "$signature_next"
 
@@ -48,8 +58,11 @@ merge() {
   # A failed merge does not stop the launch (merge-wine-registries reports
   # its own errors), but it is not recorded either: the next launch merges
   # again.
-  if merge-wine-registries "$appdir" "$@"; then
-    cp -f "$signature_next" "$signature"
+  # The merge replaces the base record hive by hive, together with the
+  # hives; the signature is recorded last.
+  if merge-wine-registries --base "$base" "$appdir" "${layers[@]}"; then
+    cp -f "$signature_next" "$signature.new"
+    mv -f "$signature.new" "$signature"
   else
     echo "warning: nix-overlayfs: merging the registry of $appdir failed; it is merged again on the next launch" >&2
     rm -f "$signature"

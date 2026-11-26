@@ -211,6 +211,55 @@ base environment.
 Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore Wine's default behaviour
 for a launch; the launcher then removes its marker again.
 
+### Registry
+
+Wine keeps the registry in the writable layer's `system.reg`, `user.reg` and
+`userdef.reg`, and saves the whole registry there, including every value
+that came from the Nix layers. Whenever the set of Nix layers changes (or a
+hive is missing), the launcher merges these hives again before mounting
+(`nix-overlayfs-registry merge`, `merge-wine-registries`). The merge is
+three-way: `.nix-overlayfs/registry-base/` holds what the layers gave at the
+last successful merge (the layers' hives merged, lowest priority first,
+without the writable layer). For each value:
+
+| Writable hive | Base record | Result |
+| --- | --- | --- |
+| same type and data as the base | has it | the layers' value now, or none if they dropped it |
+| has it | lacks it, or has another type or data | the writable value (the user or the application changed or added it) |
+| lacks it | has it | none (the user deleted it) |
+| lacks it | lacks it | the layers' value, if any |
+
+So a value the user never touched follows the layers when a rebuilt layer
+changes, adds or removes it, and what the user changed stays. `REG_SZ` `"1"`
+and `REG_DWORD` `1` are different values. A key without values follows the
+same rules: one the user deleted stays deleted, one the layers no longer have
+is removed unless the user created it. A key the user deleted comes back if a
+layer adds a new value to it. A hive missing from the writable layer is taken
+from the layers as it is.
+
+A writable layer from before the base record (or one whose base hive cannot be
+read) is merged as before, with the writable values on top, and gets a base
+record. Values it shares with the layers then follow the next layer change;
+values that differ stay the user's.
+
+A hive that cannot be read or parsed fails the merge before anything is
+written. Each hive is staged and read back before it replaces the original;
+the old base hive is removed before its writable hive is replaced and the new
+one put in place after, so every hive keeps the base it was merged with, or
+none. The layer signature (`.nix-overlayfs/registry-sources`) is recorded
+last. A failed merge keeps the old base, removes the signature and lets the
+launch go on; the next launch merges again. Delete
+`.nix-overlayfs/registry-sources` to merge on the next launch anyway, and
+`.nix-overlayfs/registry-base` to let the writable values win once more.
+
+Package settings belong in a layer (a `mkFileLayer`'s
+`registryDllOverrides`, or a layer whose build writes the registry). Do not
+write them into the writable layer at every launch with `wine reg add` in
+`extraPreLaunchCommands`: such values become the user's and no longer follow
+the package, and the state is no longer reproducible from the layers. Once a
+setting is in a layer, a package update reaches existing users, unless they
+changed that value themselves.
+
 ### Files hiding the Nix layers
 
 Whenever the set of Nix layers changes (and on the first launch with this
@@ -825,8 +874,8 @@ standalone programs in `lib/runtime/`, built with `writeShellApplication` so
   `mimeapps.list` files;
 - `nix-overlayfs-host-browser-broker`: opens the pages Wine asks for in the
   host browser;
-- `nix-overlayfs-registry`: merges the layers' registry files, replaces keys
-  of `user.reg`;
+- `nix-overlayfs-registry`: merges the layers' registry files with the
+  writable layer's (see [Registry](#registry)), replaces keys of `user.reg`;
 - `nix-overlayfs-upper-layer`: the writable layer's directory skeleton and the
   `start.exe` shim;
 - `nix-overlayfs-guard-prefix-updates` and `nix-overlayfs-check-shadowed`:
