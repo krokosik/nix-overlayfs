@@ -1045,14 +1045,43 @@ bool load_base(const State &state, std::vector<std::optional<Registry>> &bases)
         if (!bases[i]) return damaged(reg_names[i] + ": " + error);
     }
 
-    /* A launcher without base records merges without updating them; the
-       base is then older than the writable hives. It is still used: those
-       merges only add the layers' values on top, so nothing is taken for
-       deleted, and values it shares with the layers follow them. */
+    /* The signature names the Nix layers of the last successful merge.
+       When it names other layers than the base record was made for, a
+       launcher without base records (or another state's base record)
+       came in between, and the base does not say what the writable hives
+       got from the layers: trusting it would take values for the user's
+       that came from those layers, or the user's for the layers'. The base
+       is then rebuilt from the layers the signature names, which is what
+       that merge gave; they are store paths, there as long as a package
+       that uses them is. If one of them is gone, the history is unknown,
+       and the merge is the one without a base record: the writable values
+       win once (nothing of the user's is lost), and the base is recorded
+       anew. Without a signature (the last merge failed) the base record
+       is the last that succeeded and is used. */
     const auto recorded = read_file(state.signature);
     if (recorded && *recorded != sources) {
-        std::cerr << "warning: the registry base record " << state.base
-                  << " was made for other Nix layers than the last merge; using it\n";
+        std::vector<fs::path> layers;
+        bool complete = true;
+        std::istringstream paths(*recorded);
+        std::string path;
+        while (std::getline(paths, path)) {
+            if (path.empty()) continue;
+            if (!fs::is_directory(path, ec)) complete = false;
+            layers.emplace_back(path);
+        }
+        for (size_t i = 0; complete && i < reg_names.size(); ++i) {
+            bases[i].reset();
+            if (!merge_one(reg_names[i], layers, bases[i])) complete = false;
+        }
+        if (complete) {
+            std::cerr << "warning: the registry base record " << state.base
+                      << " was made for other Nix layers than the last merge; rebuilt it from the layers that merge used\n";
+        } else {
+            for (auto &base : bases) base.reset();
+            std::cerr << "warning: the registry base record " << state.base
+                      << " was made for other Nix layers than the last merge, and those layers are gone;"
+                      << " merging without it (the writable values win once)\n";
+        }
     }
     return true;
 }

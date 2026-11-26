@@ -10,6 +10,7 @@ in
 pkgs.runCommand "registry-three-way-test"
   {
     nativeBuildInputs = [
+      overlayfsLib.scripts.mergeWineRegistries
       pkgs.diffutils
       pkgs.gnugrep
     ];
@@ -241,13 +242,47 @@ merge fail "$PWD/layer1"
 has fail '"Untouched"="kept"'
 grep -Fx '"Untouched"="1"' fail-state/registry-base/user.reg
 
-# A base made for other layers than the last merge (a launcher without base
-# records merged in between) is used, with a warning.
-printf '%s\n' /nix/store/other-layers > fail-state/registry-sources
+# A base made for other layers than the signature's (the last merge) is not
+# trusted. With those layers still there, it is rebuilt from them.
+# An older launcher without base records merged layers that add New=2 in
+# between: back on this launcher, New follows the layers to 3.
+merge hist "$PWD/layer1"
+merge-wine-registries hist "$PWD/layer2" "$PWD/hist"
+printf '%s\n' "$PWD/layer2" > hist-state/registry-sources
+layer layer-new3 <<'EOF'
+[Software\\Pkg]
+"Untouched"="3"
+"New"="3"
+EOF
+merge hist "$PWD/layer-new3" 2> base.log
+grep -F 'rebuilt it from the layers that merge used' base.log
+has hist '"New"="3"'
+# (The older launcher's merge kept the writable "Untouched"="1" over its
+# layers' 2, so for that merge it was the writable layer's; it stays so.)
+has hist '"Untouched"="1"'
+# Another state's base record (valid, but for other layers), whose value
+# happens to be the user's, does not give the user's value to the layers.
+merge own "$PWD/layer1"
+sed -i 's/^"Changed"="1"$/"Changed"="user"/' own/user.reg
+layer layer-user <<'EOF'
+[Software\\Pkg]
+"Changed"="user"
+EOF
+merge foreign "$PWD/layer-user"
+rm -r own-state/registry-base
+cp -r foreign-state/registry-base own-state/registry-base
+merge own "$PWD/layer2" 2> base.log
+grep -F 'rebuilt it from the layers that merge used' base.log
+has own '"Changed"="user"'
+has own '"Untouched"="2"'
+# With those layers gone the history is unknown: the writable values win
+# once, as without a base record.
+printf '%s\n' /nix/store/gone-layers > fail-state/registry-sources
 merge fail "$PWD/layer2" 2> base.log
-grep -F 'made for other Nix layers' base.log
+grep -F 'those layers are gone' base.log
 has fail '"Untouched"="kept"'
 has fail '"New"="2"'
+grep -Fx '"Untouched"="2"' fail-state/registry-base/user.reg
 
 # An interrupted merge is completed (or, before its journal, dropped) on
 # the next run, at every step: the result is the same as without the

@@ -297,9 +297,20 @@ The base record has a `manifest` naming the size and hash of each of its hives
 that does not match its manifest (truncated, changed, or without manifest) fails
 the merge: taking it for no record would make every packaged value the user's.
 Delete `.nix-overlayfs/registry-base` to merge once with the writable values on
-top and record it anew. A record made for other layers than the last merge (a
-launcher without base records merged in between) is used, with a warning: such
-a merge only adds the layers' values on top, so nothing is taken for deleted.
+top and record it anew.
+
+A record made for other layers than the signature names (the layers of the last
+merge: a launcher without base records merged in between, or the record comes
+from another state) does not say what the writable hives got from the layers,
+and is not trusted. It is rebuilt from the layers the signature names, which are
+store paths and exist as long as a package that uses them does: a value that
+older merge brought in follows the layers from now on, and a value it kept from
+the writable layer over its layers stays the user's, as it was for that launcher.
+If one of those layers is gone, the history is unknown and the merge goes as
+without a record, in the direction that loses nothing of the user's: the
+writable values win once, and the record is made anew. Both cases print a
+warning. Without a signature (the last merge failed) the record is the last
+successful merge's and is used.
 
 A hive that cannot be read or parsed fails the merge before anything is
 written. Every new hive and the new base record
