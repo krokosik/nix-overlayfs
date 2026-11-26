@@ -42,10 +42,13 @@ pkgs.stdenvNoCC.mkDerivation {
   buildPhase = ''
     script="${package}/libexec/registry-timeouts-setupEnv.sh"
 
-    grep -F 'nix_overlayfs_upsert_user_reg_section' "$script"
-    grep -F 'WineBrowser' "$script"
-    grep -F 'nix_overlayfs_configure_host_browser_or_warn' "$script"
-    grep -F 'warning: failed to configure WineBrowser host URL opener for registry-timeouts-base' "$script"
+    # The host URL opener comes from the integration layer, not from a
+    # registry write at launch; the hook functions stay for packages.
+    grep -F 'nix_overlayfs_upsert_user_reg_section() {' "$script"
+    grep -F 'nix_overlayfs_configure_host_browser() {' "$script"
+    ! grep -F 'WineBrowser'"'"' <<EOF' "$script"
+    grep -Fx '[Software\\Wine\\WineBrowser]' ${package.integrationLayer}/user.reg
+    grep -F '"Browsers"="/nix/store/' ${package.integrationLayer}/user.reg
 
     ! grep -F ' reg add "HKCU\\Software\\Classes\\$nix_overlayfs_url_scheme"' "$script"
     ! grep -F " reg add 'HKCU\Software\Wine\WineBrowser'" "$script"

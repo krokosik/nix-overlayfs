@@ -200,16 +200,167 @@ Wine updates a prefix (wineboot's `PreInstall`, `DefaultInstall` and
 `Wow64Install`) when `.update-timestamp` is missing or does not match its
 `wine.inf`. In a layered prefix that update rewrites every builtin DLL into the
 writable layer, where the copies then hide the Nix layers for good, including
-native DLLs such as DXVK's `d3d11.dll`. Before mounting, the launcher therefore
-writes `disable` into the writable layer's `.update-timestamp`, which stops
-wineboot's automatic update (`programs/wineboot/wineboot.c`,
+native DLLs such as DXVK's `d3d11.dll`. The launcher's
+[integration layer](#integration-layer) therefore has a `.update-timestamp`
+that says `disable`, which stops wineboot's automatic update (`programs/wineboot/wineboot.c`,
 `update_timestamp()`). It does not stop an explicit `wineboot -u` or a program
 that runs `wine.inf`'s sections itself. Prefix contents come from the Nix
 layers; a Wine change that needs new prefix contents belongs in a rebuilt
 base environment.
 
-Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore Wine's default behaviour
-for a launch; the launcher then removes its marker again.
+Before mounting, the launcher removes a `.update-timestamp` from the writable
+layer, where it would hide the marker (launchers from before the integration
+layer wrote the marker there), and a whiteout of it in either form
+fuse-overlayfs reads (a `.wh..update-timestamp` file, or `.update-timestamp` as
+a 0/0 character device). A writable root that is opaque hides every layer and is
+reported. After mounting, the launcher checks that the prefix's
+`.update-timestamp` says `disable`, and stops with an error instead of starting
+Wine if it does not. Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore
+Wine's default behaviour for a launch: the writable layer then gets the
+timestamp of the highest Nix layer without the marker (an empty one if none
+has a timestamp), and the next launch without the variable removes it again.
+
+### Integration layer
+
+What the launcher itself puts into the prefix comes from a small layer
+generated with the launcher (`passthru.integrationLayer`), mounted above the
+package's layers and merged into the registry with them, so the writable
+layer holds only what the application and the user write:
+
+- `.update-timestamp` with `disable` (see above);
+- with host integration, the `start.exe` shim in `system32` and `syswow64`;
+- with host integration in a Wine package, a `user.reg` with the host URL
+  opener (`HKCU\Software\Wine\WineBrowser`) and the package's declared
+  `urlSchemes` (`HKCU\Software\Classes\<scheme>`, opening `executablePath`,
+  when that lies below `drive_c`).
+
+The layer changes with the launcher only, so a rebuilt launcher (another
+opener store path, another scheme) reaches existing users through the
+[registry merge](#registry). Its `user.reg` has only these keys, so it masks
+no other layer's values. On the first merge without a base record, the values
+that these keys have in the writable layer are taken as unchanged (earlier
+launchers wrote them there at every launch), so the layer's values win. Copies of the shim
+that earlier launchers left in the writable layer are removed before mounting.
+
+What a launch still writes into the writable layer: the merged registry
+itself (Wine needs complete hives; the values that came from the layers
+follow them, see [Registry](#registry)), and the registry entries of URL
+schemes that only `urlSchemeDiscoveryCommands` finds at launch, or of all
+schemes when `executablePath` is not below `drive_c` (its Windows path
+depends on the session's mount point). Hooks that call
+`nix_overlayfs_upsert_user_reg_section` write there too;
+`nix_overlayfs_configure_host_browser` and `nix_overlayfs_remove_start_shim`
+are kept so that existing hooks still work, but they do nothing now.
+
+### Registry
+
+Wine keeps the registry in the writable layer's `system.reg`, `user.reg` and
+`userdef.reg`, and saves the whole registry there, including every value
+that came from the Nix layers. Whenever the set of Nix layers changes (or a
+hive is missing), the launcher merges these hives again before mounting
+(`nix-overlayfs-registry merge`, `merge-wine-registries`). The merge is
+three-way: `.nix-overlayfs/registry-base/` holds what the layers gave at the
+last successful merge (the layers' hives merged, lowest priority first,
+without the writable layer). For each value:
+
+| Writable hive | Base record | Result |
+| --- | --- | --- |
+| same type and data as the base | has it | the layers' value now, or none if they dropped it |
+| has it | lacks it, or has another type or data | the writable value (the user or the application changed or added it) |
+| lacks it | has it | none (the user deleted it) |
+| lacks it | lacks it | the layers' value, if any |
+
+So a value that the user never touched follows the layers when a rebuilt layer
+changes, adds or removes it, and a value that the user changed stays.
+
+Keys and values are matched as Wine matches them. Key paths and value names
+are compared without regard to case, using the case mapping of the Wine that
+the launcher runs: its `l_intl.nls`, the table that wineserver itself uses.
+`mkWindowsPackage` and `composeWindowsLayers` pass it as `registryCaseTable`;
+without it, only ASCII letters are matched without case. `@` is the empty name,
+and escapes are decoded as Wine decodes them. Values are compared by type and data, read as
+Wine's registry loader reads them (`get_data_type` and `load_value` in
+`server/registry.c`): `"a"`, `str:"a"` and `hex(1):61,00,00,00` are the same
+`REG_SZ`; `str(2):"a"` and `hex(2):61,00,00,00` are the same `REG_EXPAND_SZ`
+(Wine saves terminated strings in string form); `dword:1`, `dword:00000001`
+and `hex(4):01,00,00,00` are the same `REG_DWORD`; spaces around `=` and between
+hex bytes, and where long hex values are broken over lines, do not matter.
+Text that Wine would not load is compared as it is. A
+different type is a different value, so `REG_SZ` `"1"` and `REG_DWORD` `1`
+differ. The merged hive keeps the text of the side that won. A key without values follows the
+same rules: a key that the user deleted stays deleted, and a key that the layers
+no longer have is removed unless the user created it. A key that the user deleted
+comes back if a layer adds a new value to it. A hive missing from the writable layer is taken
+from the layers as it is.
+
+A writable layer from before the base record is merged as before, with the
+writable values on top, and gets a base record. Values it shares with the
+layers then follow the next layer change; values that differ stay the user's.
+
+The base record has a `manifest` naming the size and hash of each of its hives
+(or that the layers had none) and the Nix layers it was made for. A record
+that does not match its manifest (truncated, changed, or without manifest) fails
+the merge: taking it for no record would make every packaged value the user's.
+Delete `.nix-overlayfs/registry-base` to merge once with the writable values on
+top and record it anew.
+
+Each commit also writes `.nix-overlayfs/registry-base.binding`: the fingerprints
+of the signature and of the base record's manifest it wrote. When the signature
+names other layers than those that the base record was made for, only what can
+be traced to the last commit is trusted, and the merge warns:
+
+- The signature is the commit's, the base record is not (another state's, or
+  replaced): the base is rebuilt from the layers the signature names, which are
+  store paths and exist as long as a package that uses them does.
+- The base record is the commit's, the signature is not (a launcher without base
+  records merged since, or the file was edited): the base record still says
+  what the layers gave for every value it has, since such a merge keeps the
+  writable value over its layers'. A value that the base record lacks is taken
+  as the layers' only if the layers named by the signature give it and can have
+  been merged into the writable hive (they exist, and every value that they give
+  is in it); otherwise only the base record is used.
+- Neither can be traced (or, in the first case, the named layers are gone): the
+  history is unknown, and the merge goes as without a record, in the direction
+  that loses nothing of the user's: the writable values win once, and the
+  record is made anew.
+
+Without a signature (the last merge failed) the record is the last successful
+merge's and is used.
+
+A hive that cannot be read or parsed fails the merge before anything is
+written. Every new hive and the new base record
+(`.nix-overlayfs/registry-base.new`) are staged and read back first. The commit
+then removes the layer signature (`.nix-overlayfs/registry-sources`), writes a
+journal (`registry-base.journal`), moves the hives and the base record into
+place, removes the journal and writes the signature last. A merge stopped
+before the journal exists leaves the old hives and base, and what it staged
+is dropped; one stopped after it is completed, before anything else. Both
+happen right after a failed merge, in the same launch, and again at the
+start of the next merge (for a launcher that was killed). A launch never
+starts Wine while a journal is left: Wine would save to hives that
+completing the merge then replaces. The journal names every file the commit
+moves, with fingerprints of the staged files and of what they replace, and
+ends with a checksum. Recovery checks all of it before it moves anything: a
+damaged or cut-off journal, a staged file that is missing or not the one
+named, or a hive changed since the merge stopped changes nothing and stops
+the launch with an error that names what to remove to start over: the journal,
+the base record and its `.new`/`.old`, and the staged `.*.nix-overlayfs-new`
+files. The next merge then runs as a first merge, with the writable values on
+top. Otherwise a failed merge keeps the old base, has
+no signature and lets the launch go on; the next launch merges again. Delete
+`.nix-overlayfs/registry-sources` to merge on the next launch anyway.
+
+Layers hold only their own changes (see [Registry of a layer](#registry-of-a-layer)),
+so a setting in a lower layer is not masked by a layer above that does not
+touch it.
+
+Package settings belong in a layer (a `mkFileLayer`'s
+`registryDllOverrides`, or a layer whose build writes the registry). Do not
+write them into the writable layer at every launch with `wine reg add` in
+`extraPreLaunchCommands`: such values become the user's and no longer follow
+the package, and the state is no longer reproducible from the layers. Once a
+setting is in a layer, a package update reaches existing users, unless they
+changed that value themselves.
 
 ### Files hiding the Nix layers
 
@@ -256,10 +407,12 @@ by hand once no session of that application runs.
 ## URL schemes
 
 A package's `urlSchemes` (plus anything `urlSchemeDiscoveryCommands` prints)
-are registered in two places at every launch:
+are registered in two places:
 
 - in the Wine prefix (`HKCU\Software\Classes\<scheme>`), so Windows programs
-  can open them;
+  can open them: declared schemes by the
+  [integration layer](#integration-layer), schemes found at launch by the
+  launch;
 - on the host, unless `registerHostUrlHandlers = false`: a hidden
   `<executableName>-nix-overlayfs-url-handler.desktop` in
   `$XDG_DATA_HOME/applications`, made the user's default with `xdg-mime`.
@@ -406,6 +559,33 @@ layers: for a dependency that is itself a package (it has
 Changes that only affect launchers (environment, DLL overrides, URL handling,
 the launcher scripts of this library) therefore do not rebuild dependent
 installations.
+
+### Registry of a layer
+
+A layer's `system.reg`, `user.reg` and `userdef.reg` hold only what it
+changes against the layers below it, not complete hives. The base environment
+is the exception: it is the bottom layer and has the complete hives. An
+installation built with `mkWindowsPackage` captures its hives as the
+difference between the registry Wine saved after the installer and the hive
+its dependencies compose to: the keys and values it added or changed, and
+what it deleted, written as `"name"=-` (a value), `[-key]` (that key's
+values, not its subkeys) and, in a key, `#-link` (its symbolic-link flag; `#-class`
+removes a key's class the same way). `HIVE.json` holds the same difference as a JSON
+merge patch (deletions as `null`), which dependent builds compose on.
+
+At launch the layers' hives are merged in launch order, lowest priority
+first: each value comes from the highest layer that sets it, and a deletion
+removes what the layers below gave. So a layer above (an application) does
+not mask a setting of a layer below (a configuration layer) that it did not
+change itself. (When layers held complete hives, the layer above carried the
+base environment's value and overrode the layer below.)
+
+Values the capture leaves out of a layer (installation dates, paths of
+temporary directories, `lib/diffs`) are left out on both sides, so they are
+not taken for deletions; nor is a key of the dependencies that has subkeys
+but no values, which Wine does not write. Deletions are for layers only: a
+writable hive that contains one fails the merge. Hand-written layer hives (for
+example `mkFileLayer`'s) contain just their own keys and values.
 
 ## Installing and launching with different Wine builds
 
@@ -825,10 +1005,10 @@ standalone programs in `lib/runtime/`, built with `writeShellApplication` so
   `mimeapps.list` files;
 - `nix-overlayfs-host-browser-broker`: opens the pages Wine asks for in the
   host browser;
-- `nix-overlayfs-registry`: merges the layers' registry files, replaces keys
-  of `user.reg`;
-- `nix-overlayfs-upper-layer`: the writable layer's directory skeleton and the
-  `start.exe` shim;
+- `nix-overlayfs-registry`: merges the layers' registry files with the
+  writable layer's (see [Registry](#registry)), replaces keys of `user.reg`;
+- `nix-overlayfs-upper-layer`: the writable layer's directory skeleton, and
+  removing `start.exe` shims that earlier launchers left there;
 - `nix-overlayfs-guard-prefix-updates` and `nix-overlayfs-check-shadowed`:
   see [Persistent runtime state](#persistent-runtime-state);
 - `nix-overlayfs-namespace`: the namespace mode, hiding `/etc/ld.so.preload`,

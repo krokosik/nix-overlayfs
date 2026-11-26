@@ -74,12 +74,40 @@ else
           for run in ["first", "second"]:
               launch(run)
               machine.succeed(f"grep -Fx disable /tmp/{run}.timestamp")
-          machine.succeed(f"grep -Fx disable {upper}/.update-timestamp")
+          # The marker comes from the launcher's integration layer.
+          machine.succeed(f"test ! -e {upper}/.update-timestamp")
 
       with subtest("the opt-out exposes the Nix layers' timestamp again"):
           launch("optout", "NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1")
           machine.succeed("grep -Fx 1 /tmp/optout.timestamp")
+          machine.succeed(f"grep -Fx 1 {upper}/.update-timestamp")
+          # Back to the default: the integration layer's marker applies again.
+          launch("again")
+          machine.succeed("grep -Fx disable /tmp/again.timestamp")
           machine.succeed(f"test ! -e {upper}/.update-timestamp")
+
+      with subtest("whiteouts of the marker in the writable layer are removed"):
+          # Both forms fuse-overlayfs reads: a .wh. file, a 0/0 character device.
+          machine.succeed(f"su - alice -c 'touch {upper}/.wh..update-timestamp'")
+          launch("whiteout-file")
+          machine.succeed("grep -Fx disable /tmp/whiteout-file.timestamp")
+          machine.succeed(f"test ! -e {upper}/.wh..update-timestamp")
+          machine.succeed(f"mknod {upper}/.update-timestamp c 0 0 && chown alice {upper}/.update-timestamp")
+          launch("whiteout-device")
+          machine.succeed("grep -Fx disable /tmp/whiteout-device.timestamp")
+          machine.succeed(f"test ! -e {upper}/.update-timestamp")
+
+      with subtest("a launch whose prefix does not show the marker does not start"):
+          machine.succeed(f"su - alice -c 'touch {upper}/.wh..wh..opq'")
+          machine.fail(
+              "su - alice -c 'HOME=/home/alice NIX_OVERLAYFS_TEST_OUT=/tmp/opaque "
+              "${package}/bin/runtime-state-vm' > /tmp/opaque.log 2>&1"
+          )
+          machine.succeed("grep -F 'has no .update-timestamp that says disable' /tmp/opaque.log")
+          machine.succeed("test ! -e /tmp/opaque.timestamp")
+          machine.succeed(f"rm {upper}/.wh..wh..opq")
+          launch("unopaque")
+          machine.succeed("grep -Fx disable /tmp/unopaque.timestamp")
 
       with subtest("Wine builtin copies stop hiding the Nix layers when they change"):
           state = f"{upper}/.nix-overlayfs"

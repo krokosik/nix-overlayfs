@@ -20,7 +20,10 @@ let
   self = {
     guardPrefixUpdates = writeShellApplication {
       name = "nix-overlayfs-guard-prefix-updates";
-      runtimeInputs = [ coreutils ];
+      runtimeInputs = [
+        attr
+        coreutils
+      ];
       text = builtins.readFile ./guard-prefix-updates.sh;
     };
 

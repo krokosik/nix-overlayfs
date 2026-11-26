@@ -57,6 +57,8 @@ let
     // extraCommands;
 in
 rec {
+  # Wine's case mapping (l_intl.nls), for the registry merge.
+  registryCaseTable = "${toolsPackage}/share/wine/nls/l_intl.nls";
   inherit
     id
     toolsPackage

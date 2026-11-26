@@ -29,6 +29,14 @@
   urlSchemeDiscoveryCommands ? "",
   urlSchemeRegistryCommands ? "",
   urlSchemeOpenCommands ? "",
+  # Register urlSchemes in the Wine registry (HKCU\Software\Classes\<scheme>,
+  # opening executablePath) through the integration layer. Wine packages set
+  # this; it needs executablePath below drive_c.
+  registerUrlSchemesInRegistry ? false,
+  # The l_intl.nls of the Wine the launcher runs: the registry merge compares
+  # key and value names with its case mapping, as Wine does. Wine packages
+  # set it; without it only ASCII letters are compared without case.
+  registryCaseTable ? null,
   entrypointWrapper ? (entrypoint: ''exec ${entrypoint} "$@"''),
   passthru ? { },
 }:
@@ -79,6 +87,81 @@ let
     scheme: "printf '%s\\n' ${lib.escapeShellArg scheme}"
   ) urlSchemes;
   runtimeSupervisor = pkgs.callPackage ./runtime-supervisor.nix { };
+
+  # The integration layer: what the launcher itself contributes to the
+  # prefix, generated with the launcher and mounted above the package's
+  # layers, so the writable layer holds only what the application and the
+  # user write. It has Wine's .update-timestamp "disable" marker (see
+  # nix-overlayfs-guard-prefix-updates), with host integration the start.exe
+  # shim and, for a Wine session, a user.reg with the host URL opener
+  # (Software\Wine\WineBrowser) and the declared URL schemes. Its user.reg
+  # holds only these keys, so it masks no other layer's values.
+  registryString = value: "\"" + lib.replaceStrings [ "\\" "\"" ] [ "\\\\" "\\\"" ] value + "\"";
+  windowsExecutablePath =
+    let
+      relative =
+        if lib.hasPrefix "/drive_c/" executablePath then
+          lib.removePrefix "/drive_c/" executablePath
+        else if lib.hasPrefix "drive_c/" executablePath then
+          lib.removePrefix "drive_c/" executablePath
+        else
+          null;
+    in
+    if relative == null then null else "C:\\" + lib.replaceStrings [ "/" ] [ "\\" ] relative;
+  # As nix-overlayfs-url-handlers filter-schemes takes them.
+  registryUrlSchemes =
+    if hostIntegration && registerUrlSchemesInRegistry && windowsExecutablePath != null then
+      lib.unique (
+        lib.filter (
+          scheme:
+          builtins.match "[a-z][a-z0-9+.-]*" scheme != null
+          && !(builtins.elem scheme [
+            "http"
+            "https"
+            "ftp"
+            "mailto"
+          ])
+        ) (map lib.toLower urlSchemes)
+      )
+    else
+      [ ];
+  integrationUserRegKeys =
+    lib.optional (session != null && hostIntegration) ''
+      [Software\\Wine\\WineBrowser]
+      "Browsers"=${registryString (lib.getExe overlayfsLib.hostUrlOpener)}
+    ''
+    ++ map (scheme: ''
+      [Software\\Classes\\${scheme}]
+      @=${registryString "URL:${scheme} Protocol"}
+      "URL Protocol"=""
+
+      [Software\\Classes\\${scheme}\\shell\\open\\command]
+      @=${registryString "\"${windowsExecutablePath}\" \"%1\""}
+    '') registryUrlSchemes;
+  integrationLayer =
+    pkgs.runCommand "${basePackage.pname}-integration-${basePackage.version}"
+      {
+        userReg = ''
+          WINE REGISTRY Version 2
+          ;; All keys relative to \\User\\S-1-5-21-0-0-0-1000
+
+          #arch=win64
+
+        ''
+        + lib.concatStringsSep "\n" integrationUserRegKeys;
+        passAsFile = [ "userReg" ];
+      }
+      ''
+        mkdir -p "$out"
+        printf 'disable\n' > "$out/.update-timestamp"
+        ${lib.optionalString hostIntegration ''
+          install -Dm444 ${overlayfsLib.hostStartShim}/bin/x86_64/start.exe "$out/drive_c/windows/system32/start.exe"
+          install -Dm444 ${overlayfsLib.hostStartShim}/bin/i686/start.exe "$out/drive_c/windows/syswow64/start.exe"
+        ''}
+        ${lib.optionalString (integrationUserRegKeys != [ ]) ''
+          install -Dm444 "$userRegPath" "$out/user.reg"
+        ''}
+      '';
 in
 assert _checkUrlSchemes;
 assert _checkNamespaceMode;
@@ -488,7 +571,7 @@ stdenv.mkDerivation {
           unset NIX_OVERLAYFS_USER_SESSION
           if [ "$nix_overlayfs_user_session" != 1 ]; then
           deps=(${pkgs.lib.strings.concatStringsSep " " deps});
-          lowerdirs="__STOREPATH__/basePackage";
+          lowerdirs="${integrationLayer}:__STOREPATH__/basePackage";
           overlay_workdir_parent="$(${pkgs.coreutils}/bin/dirname "$appdir")"
           overlay_workdir_base=".$(${pkgs.coreutils}/bin/basename "$appdir").nix-overlayfs-work"
           overlay_workdir="$overlay_workdir_parent/$overlay_workdir_base"
@@ -502,6 +585,7 @@ stdenv.mkDerivation {
             nix_overlayfs_registry_sources+=("''${deps[$i]}/basePackage")
           done
           nix_overlayfs_registry_sources+=("__STOREPATH__/basePackage")
+          nix_overlayfs_registry_sources+=("${integrationLayer}")
           nix_overlayfs_registry_sources+=("$appdir")
 
           state_dir="$appdir/.nix-overlayfs"
@@ -509,8 +593,10 @@ stdenv.mkDerivation {
 
           nix_overlayfs_registry_signature="$state_dir/registry-sources"
           nix_overlayfs_registry_signature_next="$tempdir/registry-sources"
-          ${registry} merge "$appdir" "$nix_overlayfs_registry_signature" \
-            "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}"
+          ${registry} merge --launcher-layer ${integrationLayer} ${
+            lib.optionalString (registryCaseTable != null) "--case-table ${registryCaseTable}"
+          } "$appdir" "$nix_overlayfs_registry_signature" \
+            "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}" || exit 1
 
           nix_overlayfs_prepare_upperdir_skeleton() {
             local -a nix_overlayfs_lowerdirs=()
@@ -521,7 +607,8 @@ stdenv.mkDerivation {
           nix_overlayfs_prepare_upperdir_skeleton
 
           # Keep Wine from copying its builtins over the Nix layers.
-          ${overlayfsLib.runtimeScripts.guardPrefixUpdates}/bin/nix-overlayfs-guard-prefix-updates "$appdir"
+          IFS=: read -r -a nix_overlayfs_guard_lowerdirs <<< "$lowerdirs"
+          ${overlayfsLib.runtimeScripts.guardPrefixUpdates}/bin/nix-overlayfs-guard-prefix-updates "$appdir" "''${nix_overlayfs_guard_lowerdirs[@]}"
 
           # Whenever the Nix layers change, look for writable files hiding them.
           nix_overlayfs_shadow_signature="$state_dir/shadow-check-sources"
@@ -537,8 +624,10 @@ stdenv.mkDerivation {
 
           rm -rf "$overlay_workdir"
           mkdir -p "$overlay_workdir"
+          # The start.exe shim comes from the integration layer; copies that
+          # earlier launchers left in the writable layer would hide it.
           ${lib.optionalString hostIntegration ''
-            ${upperLayer} install-start-shim "$appdir" ${overlayfsLib.hostStartShim}
+            ${upperLayer} clean-start-shim "$appdir" ${overlayfsLib.hostStartShim}
           ''}
 
           # Without the mount Wine would find an empty directory, create a new
@@ -550,15 +639,19 @@ stdenv.mkDerivation {
             if [ "''${NIX_OVERLAYFS_DIRECT_MODE:-0}" = 1 ]; then
               echo "error: nix-overlayfs: without a user namespace the mount needs a setuid fusermount3 (on NixOS: programs.fuse.enable = true)" >&2
             fi
-            # The shim goes into the writable layer before the mount, and the
-            # session's cleanup that removes it is not set up yet.
-            ${lib.optionalString hostIntegration ''
-              ${upperLayer} remove-start-shim "$appdir" "$tempdir/overlay" ${overlayfsLib.hostStartShim}
-            ''}
             exit 1
           fi
 
           cd "$tempdir/overlay/" || exit 1
+
+          # Wine must not update the prefix into the writable layer (see
+          # nix-overlayfs-guard-prefix-updates): the integration layer's
+          # marker has to be what the mounted prefix shows.
+          if [ "''${NIX_OVERLAYFS_WINE_PREFIX_UPDATES:-0}" != 1 ] \
+            && [ "$(${pkgs.coreutils}/bin/head -c 7 -- "$tempdir/overlay/.update-timestamp" 2>/dev/null)" != disable ]; then
+            echo "error: nix-overlayfs: the mounted prefix of ${basePackageName} has no .update-timestamp that says disable; something in the writable layer $appdir hides the launcher's (see the messages above). Not starting: Wine would update the prefix into the writable layer." >&2
+            exit 1
+          fi
 
           ${if session == null then "" else renderEnvExports session.env}
 
@@ -589,19 +682,10 @@ stdenv.mkDerivation {
             ${registry} upsert-section "$appdir/user.reg" "$1" "$tempdir"
           }
 
+          # The host URL opener (Software\\Wine\\WineBrowser) comes from the
+          # integration layer; kept for hooks that still call it.
           nix_overlayfs_configure_host_browser() {
-            ${
-              if session == null || !hostIntegration then
-                ''
-                  :
-                ''
-              else
-                ''
-                                nix_overlayfs_upsert_user_reg_section 'Software\\Wine\\WineBrowser' <<EOF
-                  "Browsers"=$(nix_overlayfs_registry_string '${lib.getExe overlayfsLib.hostUrlOpener}')
-                  EOF
-                ''
-            }
+            :
           }
 
           nix_overlayfs_configure_host_browser_or_warn() {
@@ -610,15 +694,10 @@ stdenv.mkDerivation {
             fi
           }
 
+          # The start.exe shim comes from the integration layer; kept for
+          # hooks that still call it.
           nix_overlayfs_remove_start_shim() {
-            ${
-              if hostIntegration then
-                ''
-                  ${upperLayer} remove-start-shim "$appdir" "$tempdir/overlay" ${overlayfsLib.hostStartShim}
-                ''
-              else
-                ":"
-            }
+            :
           }
 
           nix_overlayfs_enable_start_shim() {
@@ -652,6 +731,11 @@ stdenv.mkDerivation {
             }
           }
 
+          # The URL schemes the integration layer registers in the registry;
+          # urlSchemeRegistryCommands registers only the others (found at
+          # launch by urlSchemeDiscoveryCommands).
+          nix_overlayfs_registry_url_schemes=${lib.escapeShellArg (" " + lib.concatStringsSep " " registryUrlSchemes + " ")}
+
           ${urlSchemeRegistrationCommands}
           ${overlayProcessCommands}
 
@@ -668,7 +752,6 @@ stdenv.mkDerivation {
             trap - EXIT HUP INT TERM
             nix_overlayfs_run_post_launch_once || true
             ${if session == null then "" else session.postCommands}
-            nix_overlayfs_remove_start_shim || true
             nix_overlayfs_shutdown_wine_prefix "$tempdir/overlay" || true
             exit $status
           }
@@ -731,7 +814,6 @@ stdenv.mkDerivation {
           nix_overlayfs_prepare_launch_session() {
             :
             ${lib.optionalString hostIntegration ''
-              nix_overlayfs_configure_host_browser_or_warn
               nix_overlayfs_register_url_handlers
               ${urlSchemeRegistryCommands}
               nix_overlayfs_enable_start_shim
@@ -796,6 +878,10 @@ stdenv.mkDerivation {
         '';
     in
     ''
+      ${lib.optionalString (registryCaseTable != null) ''
+        # The registry merge needs the case mapping table of its Wine.
+        test -f ${registryCaseTable}
+      ''}
       mkdir bin libexec
       ln --symbolic ${basePackage} basePackage
 
@@ -822,6 +908,7 @@ stdenv.mkDerivation {
 
   passthru = passthru // {
     inherit
+      integrationLayer
       basePackage
       executablePath
       hostIntegration

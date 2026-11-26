@@ -126,7 +126,8 @@ pkgs.runCommand "registry-helpers-test" { nativeBuildInputs = [ pkgs.gnugrep ]; 
   # Hooks keep using the shell functions, which call the program.
   script="${package}/libexec/registry-helpers-setupEnv.sh"
   grep -F 'nix-overlayfs-registry upsert-section "$appdir/user.reg" "$1" "$tempdir"' "$script"
-  grep -F 'nix-overlayfs-registry merge "$appdir" "$nix_overlayfs_registry_signature"' "$script"
+  grep -F 'nix-overlayfs-registry merge --launcher-layer /nix/store/' "$script"
+  grep -F '"$appdir" "$nix_overlayfs_registry_signature"' "$script"
 
   touch "$out"
 ''

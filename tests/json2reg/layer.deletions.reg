@@ -1,0 +1,13 @@
+WINE REGISTRY Version 2
+;; All keys relative to REGISTRY\\User\\S-1-5-21-0-0-0-1000
+
+#arch=win64
+
+[Control Panel\\Desktop]
+"FontSmoothingGamma"=-
+"FontSmoothingType"=dword:00000002
+
+[-Software\\Gone]
+
+[Software\\Unlinked]
+#-link
