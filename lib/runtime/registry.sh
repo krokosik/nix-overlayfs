@@ -1,5 +1,5 @@
 # Usage:
-#   nix-overlayfs-registry merge [--launcher-layer DIR] APPDIR SIGNATURE SIGNATURE_NEXT SOURCE...
+#   nix-overlayfs-registry merge [--launcher-layer DIR] [--case-table FILE] APPDIR SIGNATURE SIGNATURE_NEXT SOURCE...
 #   nix-overlayfs-registry upsert-section REGISTRY SECTION TMPDIR < BODY
 #   nix-overlayfs-registry string VALUE
 #
@@ -13,7 +13,9 @@
 # record that does not match its manifest fails the merge. DIR, one of the
 # SOURCEs, is the launcher's integration layer: on a merge without a base
 # record, the keys it has are taken from the layers, not from APPDIR, where
-# earlier launchers wrote them at every launch. Writes the
+# earlier launchers wrote them at every launch. FILE is the l_intl.nls of
+# the Wine the launcher runs: key and value names are compared with its case
+# mapping, as Wine compares them. Writes the
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
 # differ from SIGNATURE (the last successful merge) or a registry file is
 # missing. A failed merge removes SIGNATURE, so the next call merges again;
@@ -27,16 +29,22 @@
 # string: prints VALUE as a quoted registry string value.
 
 usage() {
-  echo "usage: nix-overlayfs-registry merge [--launcher-layer DIR] APPDIR SIGNATURE SIGNATURE_NEXT SOURCE... | upsert-section REGISTRY SECTION TMPDIR | string VALUE" >&2
+  echo "usage: nix-overlayfs-registry merge [--launcher-layer DIR] [--case-table FILE] APPDIR SIGNATURE SIGNATURE_NEXT SOURCE... | upsert-section REGISTRY SECTION TMPDIR | string VALUE" >&2
   exit 2
 }
 
 merge() {
   local -a launcher_layer=()
-  if [ "$1" = --launcher-layer ]; then
-    launcher_layer=(--launcher-layer "$2")
+  local -a case_table=()
+  while [ "$#" -ge 2 ]; do
+    case "$1" in
+      --launcher-layer) launcher_layer=(--launcher-layer "$2") ;;
+      --case-table) case_table=(--case-table "$2") ;;
+      *) break ;;
+    esac
     shift 2
-  fi
+  done
+  [ "$#" -ge 3 ] || usage
   local appdir="$1"
   local signature="$2"
   local signature_next="$3"
@@ -70,7 +78,7 @@ merge() {
   # again.
   # merge-wine-registries also completes a merge that was interrupted,
   # replaces the base record and records the signature last.
-  if ! merge-wine-registries --base "$base" --signature "$signature" \
+  if ! merge-wine-registries "${case_table[@]}" --base "$base" --signature "$signature" \
     --signature-next "$signature_next" "${launcher_layer[@]}" "$appdir" "${layers[@]}"; then
     echo "warning: nix-overlayfs: merging the registry of $appdir failed; it is merged again on the next launch" >&2
     rm -f "$signature"
@@ -116,9 +124,6 @@ registry_string() {
 case "${1:-}" in
   merge)
     [ "$#" -ge 4 ] || usage
-    if [ "$2" = --launcher-layer ]; then
-      [ "$#" -ge 6 ] || usage
-    fi
     shift
     merge "$@"
     ;;

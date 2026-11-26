@@ -4,6 +4,8 @@
 }:
 let
   registry = "${overlayfsLib.runtimeScripts.registry}/bin/nix-overlayfs-registry";
+  # The case mapping of a Wine the launchers run.
+  caseTable = "${pkgs.nix-overlayfs.moduleScopes.nativeModules.runtime.toolsPackage}/share/wine/nls/l_intl.nls";
 in
 pkgs.runCommand "registry-three-way-test"
   {
@@ -27,7 +29,7 @@ layer() {
   printf '[Control Panel]\n"d"="1"\n' | hive "$1" userdef 'User\\.Default'
 }
 merge() {
-  ${registry} merge "$PWD/$1" "$1-state/registry-sources" tmp/registry-sources "''${@:2}" "$PWD/$1"
+  ${registry} merge --case-table ${caseTable} "$PWD/$1" "$1-state/registry-sources" tmp/registry-sources "''${@:2}" "$PWD/$1"
 }
 has() { grep -Fx -- "$2" "$1/user.reg"; }
 lacks() { ! grep -Fx -- "$2" "$1/user.reg"; }
@@ -297,6 +299,12 @@ layer forms1 <<'EOF'
 "Wrapped"=hex:00,01,02,03,04,05,06,07,08,09,0a,0b,0c,0d,0e,0f,10,11,12,13,14,15,16,17,18,19,1a,1b,1c
 "TypeChange"="1"
 "Retyped"=hex(2):31,00,00,00
+"StrColon"=str:"a"
+"Spaced"="a"
+"ShortDword"=dword:00000001
+"HexDigits"=hex:01,02
+"\x0386"="old"
+"\x0531"="old"
 EOF
 layer forms2 <<'EOF'
 [Software\\Forms]
@@ -311,6 +319,12 @@ layer forms2 <<'EOF'
 "Wrapped"=hex:ff
 "TypeChange"="2"
 "Retyped"="2"
+"StrColon"="b"
+"Spaced"="b"
+"ShortDword"=dword:00000002
+"HexDigits"=hex:03
+"\x0386"="new"
+"\x0531"="new"
 EOF
 merge forms "$PWD/forms1"
 # Wine saves the same values in its own forms; the user changes the type of
@@ -328,7 +342,13 @@ hive forms user 'User\\S-1-5-21-0-0-0-1000' <<'EOF'
 "Wrapped"=hex:00,01,02,03,04,05,06,07,08,09,0a,0b,0c,0d,0e,0f,10,11,12,13,14,15,\
   16,17,18,19,1a,1b,1c
 "TypeChange"=dword:00000001
-"Retyped"=str(1):"1"
+"Retyped"="1"
+"StrColon"="a"
+"Spaced" = "a"
+"ShortDword"=dword:1
+"HexDigits"=hex:1 , 2
+"\x03ac"="old"
+"\x0561"="old"
 EOF
 merge forms "$PWD/forms2"
 cat forms/user.reg
@@ -344,7 +364,18 @@ has forms '"Case"="2"'
 lacks forms '"CASE"="1"'
 has forms '"Wrapped"=hex:ff'
 has forms '"TypeChange"=dword:00000001'
-has forms '"Retyped"=str(1):"1"'
+has forms '"Retyped"="1"'
+# Everything Wine's loader accepts, and its own case mapping (l_intl.nls):
+# str:"a" is "a", spaces around =, short dwords and hex bytes, Greek and
+# Armenian names that differ only in case.
+has forms '"StrColon"="b"'
+has forms '"Spaced"="b"'
+has forms '"ShortDword"=dword:00000002'
+has forms '"HexDigits"=hex:03'
+has forms '"\x0386"="new"'
+lacks forms '"\x03ac"="old"'
+has forms '"\x0531"="new"'
+lacks forms '"\x0561"="old"'
 test "$(grep -ci '^\[software\\\\forms\]' forms/user.reg)" -eq 1
 
 # A layer's hive can delete what the layers below give: "name"=- a value,

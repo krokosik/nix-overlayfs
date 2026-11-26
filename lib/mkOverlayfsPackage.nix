@@ -33,6 +33,10 @@
   # opening executablePath) through the integration layer. Wine packages set
   # this; it needs executablePath below drive_c.
   registerUrlSchemesInRegistry ? false,
+  # The l_intl.nls of the Wine the launcher runs: the registry merge compares
+  # key and value names with its case mapping, as Wine does. Wine packages
+  # set it; without it only ASCII letters are compared without case.
+  registryCaseTable ? null,
   entrypointWrapper ? (entrypoint: ''exec ${entrypoint} "$@"''),
   passthru ? { },
 }:
@@ -589,7 +593,9 @@ stdenv.mkDerivation {
 
           nix_overlayfs_registry_signature="$state_dir/registry-sources"
           nix_overlayfs_registry_signature_next="$tempdir/registry-sources"
-          ${registry} merge --launcher-layer ${integrationLayer} "$appdir" "$nix_overlayfs_registry_signature" \
+          ${registry} merge --launcher-layer ${integrationLayer} ${
+            lib.optionalString (registryCaseTable != null) "--case-table ${registryCaseTable}"
+          } "$appdir" "$nix_overlayfs_registry_signature" \
             "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}"
 
           nix_overlayfs_prepare_upperdir_skeleton() {
@@ -863,6 +869,10 @@ stdenv.mkDerivation {
         '';
     in
     ''
+      ${lib.optionalString (registryCaseTable != null) ''
+        # The registry merge needs the Wine's case mapping table.
+        test -f ${registryCaseTable}
+      ''}
       mkdir bin libexec
       ln --symbolic ${basePackage} basePackage
 

@@ -135,6 +135,7 @@ mkOverlayfsPackage {
   inherit extraPostLaunchCommands;
   urlSchemeRegistryCommands = protocolRegistrationCommands;
   registerUrlSchemesInRegistry = true;
+  registryCaseTable = launchRuntime.registryCaseTable or null;
   overlayDependencies = baseEnv ++ baseLayer.overlayDependencies ++ overlayDependencies;
   launchProgram = session.commands.wine;
   basePackageName = packageName;

@@ -269,13 +269,18 @@ So a value that the user never touched follows the layers when a rebuilt layer
 changes, adds or removes it, and a value that the user changed stays.
 
 Keys and values are matched as Wine matches them: key paths and value names
-without regard to case (ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic
-letters), `@` as the empty name, escapes decoded. Values are compared by type
-and data, whatever form the file writes them in: `"a"`, `str(1):"a"` and
-`hex(1):61,00,00,00` are the same `REG_SZ`; `str(2):"a"` and
-`hex(2):61,00,00,00` are the same `REG_EXPAND_SZ` (Wine saves terminated strings
-in string form); `dword:00000001` and `hex(4):01,00,00,00` the same
-`REG_DWORD`; it does not matter where long hex values are broken over lines. A
+without regard to case, with the case mapping of the Wine the launcher runs
+(its `l_intl.nls`, the table wineserver itself uses; `mkWindowsPackage` and
+`composeWindowsLayers` pass it as `registryCaseTable`, and without it only
+ASCII letters are matched without case), `@` as the empty name, escapes
+decoded as Wine decodes them. Values are compared by type and data, read as
+Wine's registry loader reads them (`get_data_type` and `load_value` in
+`server/registry.c`): `"a"`, `str:"a"` and `hex(1):61,00,00,00` are the same
+`REG_SZ`; `str(2):"a"` and `hex(2):61,00,00,00` are the same `REG_EXPAND_SZ`
+(Wine saves terminated strings in string form); `dword:1`, `dword:00000001`
+and `hex(4):01,00,00,00` the same `REG_DWORD`; spaces around `=` and between
+hex bytes, and where long hex values are broken over lines, do not matter.
+Text Wine would not load is compared as it is. A
 different type is a different value, so `REG_SZ` `"1"` and `REG_DWORD` `1`
 differ. The merged hive keeps the text of the side that won. A key without values follows the
 same rules: a key that the user deleted stays deleted, and a key that the layers

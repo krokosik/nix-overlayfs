@@ -1,4 +1,6 @@
+#include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <iterator>
@@ -78,102 +80,141 @@ int hex_digit(char c)
     return -1;
 }
 
-/* Decodes UTF-8 text with Wine's registry escapes (parse_strW in
-   server/registry.c) into UTF-16 code units. */
-std::u16string unescape(std::string_view text)
+/* Wine's parse_strW (server/unicode.c): decodes registry file text, UTF-8
+   with Wine's escapes, into UTF-16 code units, up to the first unescaped
+   ENDCHAR (0: to the end). CONSUMED, if given, gets the index after ENDCHAR,
+   or npos when there is none. Invalid UTF-8 is dropped, as Wine drops it. */
+std::u16string parse_wine_string(std::string_view src, char endchar = 0, size_t *consumed = nullptr)
 {
-    std::u16string result;
-    auto push_code_point = [&](uint32_t cp) {
-        if (cp >= 0x10000) {
-            cp -= 0x10000;
-            result += static_cast<char16_t>(0xd800 + (cp >> 10));
-            result += static_cast<char16_t>(0xdc00 + (cp & 0x3ff));
-        } else {
-            result += static_cast<char16_t>(cp);
-        }
-    };
+    static const unsigned char utf8_length[128] = {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    static const unsigned char utf8_mask[4] = {0x7f, 0x1f, 0x0f, 0x07};
+    static const uint32_t utf8_minval[4] = {0x0, 0x80, 0x800, 0x10000};
 
-    for (size_t i = 0; i < text.size();) {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        if (c == '\\' && i + 1 < text.size()) {
-            const char e = text[i + 1];
-            i += 2;
-            switch (e) {
-            case 'a': result += u'\a'; break;
-            case 'b': result += u'\b'; break;
-            case 'e': result += char16_t(27); break;
-            case 'f': result += u'\f'; break;
-            case 'n': result += u'\n'; break;
-            case 'r': result += u'\r'; break;
-            case 't': result += u'\t'; break;
-            case 'v': result += u'\v'; break;
+    auto at = [&](size_t i) -> unsigned char { return i < src.size() ? static_cast<unsigned char>(src[i]) : 0; };
+    std::u16string dest;
+    size_t p = 0;
+    while (at(p) && (endchar == 0 || at(p) != static_cast<unsigned char>(endchar))) {
+        if (at(p) == '\\') {
+            ++p;
+            if (!at(p)) break;
+            switch (at(p)) {
+            case 'a': dest += u'\a'; ++p; continue;
+            case 'b': dest += u'\b'; ++p; continue;
+            case 'e': dest += char16_t(27); ++p; continue;
+            case 'f': dest += u'\f'; ++p; continue;
+            case 'n': dest += u'\n'; ++p; continue;
+            case 'r': dest += u'\r'; ++p; continue;
+            case 't': dest += u'\t'; ++p; continue;
+            case 'v': dest += u'\v'; ++p; continue;
             case 'x': {
-                uint32_t value = 0;
-                int digits = 0;
-                while (digits < 4 && i < text.size() && hex_digit(text[i]) >= 0) {
-                    value = value * 16 + hex_digit(text[i]);
-                    ++i;
-                    ++digits;
-                }
-                if (digits == 0) result += u'x';
-                else result += static_cast<char16_t>(value);
-                break;
-            }
-            default:
-                if (e >= '0' && e <= '7') {
-                    uint32_t value = e - '0';
-                    int digits = 1;
-                    while (digits < 3 && i < text.size() && text[i] >= '0' && text[i] <= '7') {
-                        value = value * 8 + (text[i] - '0');
-                        ++i;
-                        ++digits;
-                    }
-                    result += static_cast<char16_t>(value);
+                ++p;
+                if (hex_digit(at(p)) < 0) {
+                    dest += u'x';
                 } else {
-                    push_code_point(static_cast<unsigned char>(e));
+                    char16_t value = 0;
+                    for (int k = 0; k < 4 && hex_digit(at(p)) >= 0; ++k) value = value * 16 + hex_digit(at(p++));
+                    dest += value;
                 }
+                continue;
             }
-            continue;
+            case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7': {
+                char16_t value = at(p++) - '0';
+                for (int k = 0; k < 2 && at(p) >= '0' && at(p) <= '7'; ++k) value = value * 8 + (at(p++) - '0');
+                dest += value;
+                continue;
+            }
+            }
+            /* any other escaped character stands for itself */
         }
 
-        /* UTF-8; a malformed sequence is taken byte by byte. */
-        const int extra = c >= 0xf8 ? -1 : c >= 0xf0 ? 3 : c >= 0xe0 ? 2 : c >= 0xc0 ? 1 : c >= 0x80 ? -1 : 0;
-        uint32_t cp = extra == 3 ? (c & 0x07) : extra == 2 ? (c & 0x0f) : extra == 1 ? (c & 0x1f) : c;
-        bool valid = extra >= 0;
-        for (int k = 1; valid && k <= extra; ++k) {
-            if (i + k >= text.size() || (static_cast<unsigned char>(text[i + k]) & 0xc0) != 0x80) valid = false;
-            else cp = (cp << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3f);
-        }
-        if (!valid) {
-            result += static_cast<char16_t>(c);
-            ++i;
+        unsigned char ch = at(p++);
+        if (ch < 0x80) {
+            dest += static_cast<char16_t>(ch);
             continue;
         }
-        push_code_point(cp);
-        i += extra + 1;
+        const int charlen = utf8_length[ch - 0x80];
+        uint32_t res = ch & utf8_mask[charlen];
+        bool valid = charlen > 0;
+        for (int k = 0; valid && k < charlen; ++k) {
+            ch = at(p) ^ 0x80;
+            if (ch >= 0x40) valid = false;
+            else {
+                res = (res << 6) | ch;
+                ++p;
+            }
+        }
+        if (!valid || res < utf8_minval[charlen] || res > 0x10ffff) continue;
+        if (res <= 0xffff) {
+            dest += static_cast<char16_t>(res);
+        } else {
+            res -= 0x10000;
+            dest += static_cast<char16_t>(0xd800 | (res >> 10));
+            dest += static_cast<char16_t>(0xdc00 | (res & 0x3ff));
+        }
     }
-    return result;
+    if (consumed) *consumed = (endchar != 0 && at(p) == static_cast<unsigned char>(endchar)) ? p + 1 : std::string_view::npos;
+    return dest;
 }
 
-/* Wine compares key and value names without regard to case. This folds
-   ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic capitals, which
-   covers the names Windows programs use in practice. */
+std::u16string unescape(std::string_view text)
+{
+    return parse_wine_string(text);
+}
+
+/* Wine compares key and value names without regard to case, mapping each
+   character to lower case with the table in its l_intl.nls (to_lower in
+   server/unicode.c). load_case_table reads that table from the Wine the
+   launcher runs; without it only ASCII letters are folded. */
+std::vector<uint16_t> case_table;
+
+bool load_case_table(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> raw((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto word = [&](size_t index, uint16_t &out) {
+        if (index * 2 + 1 >= raw.size()) return false;
+        out = static_cast<uint16_t>(static_cast<unsigned char>(raw[index * 2]) | (static_cast<unsigned char>(raw[index * 2 + 1]) << 8));
+        return true;
+    };
+    uint16_t data = 0;
+    size_t offset = 0;
+    /* As init_casemap in Wine's server/unicode.c: the header's size, the
+       uppercase table's size, then the lowercase table. */
+    if (!in.bad() && word(0, data) && data) {
+        offset = data;
+        if (word(offset, data) && data) {
+            offset += data;
+            if (word(offset, data) && data > 1) {
+                const size_t size = data - 1;
+                ++offset;
+                std::vector<uint16_t> table(size);
+                bool ok = true;
+                for (size_t i = 0; ok && i < size; ++i) ok = word(offset + i, table[i]);
+                if (ok && table.size() >= 256) {
+                    case_table = std::move(table);
+                    return true;
+                }
+            }
+        }
+    }
+    std::cerr << "error: " << path << " is not a Wine case mapping table (l_intl.nls)\n";
+    return false;
+}
+
 char16_t fold(char16_t c)
 {
-    if (c >= u'A' && c <= u'Z') return c + 32;
-    if (c < 0x80) return c;
-    if (c >= 0xc0 && c <= 0xde && c != 0xd7) return c + 32;
-    if (c == 0x178) return 0xff;
-    if (c >= 0x100 && c <= 0x17f && c != 0x130 && c != 0x131 && c != 0x138 && c != 0x149 && c != 0x17f) {
-        /* Pairs: even capital, odd small, except 0x139-0x148 and 0x179-0x17e. */
-        const bool odd_capitals = (c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17e);
-        if (odd_capitals ? (c & 1) : !(c & 1)) return c + 1;
-        return c;
-    }
-    if (c >= 0x391 && c <= 0x3ab && c != 0x3a2) return c + 32;
-    if (c >= 0x410 && c <= 0x42f) return c + 32;
-    if (c >= 0x400 && c <= 0x40f) return c + 80;
-    return c;
+    if (case_table.empty()) return (c >= u'A' && c <= u'Z') ? c + 32 : c;
+    const size_t first = c >> 8;
+    if (first >= case_table.size()) return c;
+    const size_t second = case_table[first] + ((c >> 4) & 0x0f);
+    if (second >= case_table.size()) return c;
+    const size_t third = case_table[second] + (c & 0x0f);
+    if (third >= case_table.size()) return c;
+    return static_cast<char16_t>(c + case_table[third]);
 }
 
 std::string identity(const std::u16string &text)
@@ -206,7 +247,10 @@ std::string name_identity(std::string_view name)
 }
 
 /* The separator between a key and its subkeys in an identity. */
-const std::string separator_identity = identity(u"\\");
+std::string separator_identity()
+{
+    return identity(u"\\");
+}
 
 /* Where the string starting with the quote at START ends (the index of the
    closing quote), or npos. */
@@ -222,11 +266,12 @@ size_t closing_quote(std::string_view text, size_t start)
     return std::string_view::npos;
 }
 
-/* A value's type and data, decoded from the forms Wine writes
-   (dump_value in server/registry.c): "string" (REG_SZ), str(N):"string",
-   dword:XXXXXXXX (REG_DWORD), hex:... (REG_BINARY) and hex(N):...; the
-   same type and bytes in any of these forms are the same value. Text that
-   is none of them is compared as it is, without line continuations. */
+/* A value's type and data, decoded as Wine's registry loader decodes them
+   (get_data_type and load_value in server/registry.c): "string" and
+   str:"string" (REG_SZ), str(2):"string" (REG_EXPAND_SZ), str(7):"string"
+   (REG_MULTI_SZ), dword:N (REG_DWORD), hex:... (REG_BINARY) and
+   hex(N):... (type N). The same type and bytes in any of these forms are
+   the same value. Text Wine would not load is compared as it is. */
 struct Data {
     bool decoded = false;
     uint32_t type = 0;
@@ -259,90 +304,90 @@ std::string join_lines(std::string_view value)
     return result;
 }
 
-std::optional<uint32_t> parse_hex_number(std::string_view text)
+bool is_space(char c)
 {
-    if (text.empty() || text.size() > 8) return std::nullopt;
-    uint32_t value = 0;
-    for (const char c : text) {
-        const int d = hex_digit(c);
-        if (d < 0) return std::nullopt;
-        value = value * 16 + d;
-    }
-    return value;
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r';
 }
 
-bool decode_string(std::string_view text, Data &data)
+/* Wine's parse_hex over the lines of a REG_BINARY value: comma-separated
+   bytes (strtoul in base 16, at most 0xff each), a line ending in "\"
+   continues on the next. */
+bool decode_hex_lines(const std::string &raw, size_t start, Data &data)
 {
-    if (text.empty() || text.front() != '"') return false;
-    const size_t close = closing_quote(text, 0);
-    if (close == std::string_view::npos || !blank(text.substr(close + 1))) return false;
-    std::u16string chars = unescape(text.substr(1, close - 1));
-    chars += u'\0';
-    for (const char16_t c : chars) {
-        data.bytes.push_back(static_cast<uint8_t>(c & 0xff));
-        data.bytes.push_back(static_cast<uint8_t>(c >> 8));
-    }
-    return true;
-}
-
-bool decode_hex_bytes(std::string_view text, Data &data)
-{
-    int high = -1;
-    for (const char c : text) {
-        if (c == ',' || c == ' ' || c == '\t') {
-            if (high >= 0) return false;
-            continue;
+    size_t line_start = start;
+    while (true) {
+        size_t line_end = raw.find('\n', line_start);
+        if (line_end == std::string::npos) line_end = raw.size();
+        const std::string line = raw.substr(line_start, line_end - line_start);
+        const char *p = line.c_str();
+        while (std::isxdigit(static_cast<unsigned char>(*p))) {
+            char *end = nullptr;
+            const unsigned long value = std::strtoul(p, &end, 16);
+            if (end == p || value > 0xff) return false;
+            data.bytes.push_back(static_cast<uint8_t>(value));
+            p = end;
+            while (is_space(*p)) ++p;
+            if (*p == ',') ++p;
+            while (is_space(*p)) ++p;
         }
-        const int d = hex_digit(c);
-        if (d < 0) return false;
-        if (high < 0) {
-            high = d;
-        } else {
-            data.bytes.push_back(static_cast<uint8_t>(high * 16 + d));
-            high = -1;
-        }
+        while (is_space(*p)) ++p;
+        if (!*p) return true;
+        if (*p != '\\' || line_end >= raw.size()) return false;
+        line_start = line_end + 1;
+        while (line_start < raw.size() && is_space(raw[line_start]) && raw[line_start] != '\n') ++line_start;
     }
-    return high < 0;
 }
 
-Data decode_data(std::string_view raw)
+Data decode_data(std::string_view raw_view)
 {
     Data data;
+    const std::string raw(raw_view);
     data.text = join_lines(raw);
-    const std::string_view text = data.text;
+
+    struct Tag {
+        const char *tag;
+        int type;
+        bool string;
+    };
+    static const Tag tags[] = {
+        {"\"", 1, true}, {"str:\"", 1, true}, {"str(2):\"", 2, true}, {"str(7):\"", 7, true},
+        {"hex:", 3, false}, {"dword:", 4, false}, {"hex(", -1, false},
+    };
 
     bool ok = false;
-    if (starts_with(text, "\"")) {
-        data.type = 1;
-        ok = decode_string(text, data);
-    } else if (starts_with(text, "str(")) {
-        const size_t close = text.find("):");
-        if (close != std::string_view::npos) {
-            const auto type = parse_hex_number(text.substr(4, close - 4));
-            if (type) {
-                data.type = *type;
-                ok = decode_string(text.substr(close + 2), data);
-            }
+    for (const auto &tag : tags) {
+        const size_t length = std::strlen(tag.tag);
+        if (raw.compare(0, length, tag.tag) != 0) continue;
+        size_t start = length;
+        uint32_t type = 0;
+        if (tag.type == -1) {
+            const char *begin = raw.c_str() + 4;
+            char *end = nullptr;
+            type = static_cast<uint32_t>(std::strtoul(begin, &end, 16));
+            if (end <= raw.c_str() || std::strncmp(end, "):", 2) != 0) break;
+            start = static_cast<size_t>(end - raw.c_str()) + 2;
+        } else {
+            type = static_cast<uint32_t>(tag.type);
         }
-    } else if (starts_with(text, "dword:")) {
-        const auto value = parse_hex_number(text.substr(6));
-        if (value) {
-            data.type = 4;
-            for (int i = 0; i < 4; ++i) data.bytes.push_back(static_cast<uint8_t>(*value >> (8 * i)));
+        data.type = type;
+        if (tag.string) {
+            size_t consumed = 0;
+            std::u16string chars = parse_wine_string(std::string_view(raw).substr(start), '"', &consumed);
+            if (consumed == std::string_view::npos) break;
+            chars += u'\0';
+            for (const char16_t c : chars) {
+                data.bytes.push_back(static_cast<uint8_t>(c & 0xff));
+                data.bytes.push_back(static_cast<uint8_t>(c >> 8));
+            }
             ok = true;
+        } else if (tag.type == 4) {
+            const uint32_t value = static_cast<uint32_t>(std::strtoul(raw.c_str() + start, nullptr, 16));
+            for (int i = 0; i < 4; ++i) data.bytes.push_back(static_cast<uint8_t>(value >> (8 * i)));
+            ok = true;
+        } else {
+            ok = decode_hex_lines(raw, start, data);
         }
-    } else if (starts_with(text, "hex:")) {
-        data.type = 3;
-        ok = decode_hex_bytes(text.substr(4), data);
-    } else if (starts_with(text, "hex(")) {
-        const size_t close = text.find("):");
-        if (close != std::string_view::npos) {
-            const auto type = parse_hex_number(text.substr(4, close - 4));
-            if (type) {
-                data.type = *type;
-                ok = decode_hex_bytes(text.substr(close + 2), data);
-            }
-        }
+        break;
     }
 
     if (ok) {
@@ -462,22 +507,28 @@ std::optional<Registry> parse_registry(const fs::path &path, std::string &error)
             continue;
         }
 
-        size_t equals = std::string::npos;
+        /* "name" or @, then = with optional spaces around it, as
+           parse_value_name in Wine's server/registry.c reads it. */
+        size_t name_end = std::string::npos;
         if (line.front() == '"') {
             const size_t close = closing_quote(line, 0);
-            if (close != std::string::npos && close + 1 < line.size() && line[close + 1] == '=') equals = close + 1;
-        } else if (line.front() == '@' && line.size() > 1 && line[1] == '=') {
-            equals = 1;
+            if (close != std::string::npos) name_end = close + 1;
+        } else if (line.front() == '@') {
+            name_end = 1;
         } else {
-            equals = line.find('=');
+            name_end = line.find('=');
         }
-        if (equals == std::string::npos || !section) {
+        size_t equals = name_end;
+        while (equals != std::string::npos && equals < line.size() && is_space(line[equals])) ++equals;
+        if (equals == std::string::npos || equals >= line.size() || line[equals] != '=' || !section) {
             error = "malformed value at line " + std::to_string(line_no);
             return std::nullopt;
         }
+        size_t data_start = equals + 1;
+        while (data_start < line.size() && is_space(line[data_start])) ++data_start;
 
-        pending_name = line.substr(0, equals);
-        pending_value = line.substr(equals + 1);
+        pending_name = line.substr(0, name_end);
+        pending_value = line.substr(data_start);
         if (!pending_value.empty() && pending_value.back() == '\\') {
             have_pending = true;
         } else {
@@ -620,7 +671,7 @@ bool has_deletions(const Registry &registry)
 bool has_key(const Keys &keys, const std::string &id)
 {
     if (keys.count(id)) return true;
-    const std::string prefix = id + separator_identity;
+    const std::string prefix = id + separator_identity();
     const auto next = keys.lower_bound(prefix);
     return next != keys.end() && starts_with(next->first, prefix);
 }
@@ -1174,40 +1225,46 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
 int main(int argc, char **argv)
 {
     const std::string usage =
-        "usage: merge-wine-registries OUT_DIR SOURCE_DIR...\n"
-        "       merge-wine-registries --base BASE_DIR --signature SIGNATURE --signature-next SIGNATURE_NEXT\n"
-        "                             [--launcher-layer DIR] WRITABLE_DIR [LAYER_DIR...]\n";
+        "usage: merge-wine-registries [--case-table L_INTL_NLS] OUT_DIR SOURCE_DIR...\n"
+        "       merge-wine-registries [--case-table L_INTL_NLS] --base BASE_DIR --signature SIGNATURE\n"
+        "                             --signature-next SIGNATURE_NEXT [--launcher-layer DIR] WRITABLE_DIR [LAYER_DIR...]\n";
 
-    if (argc >= 2 && std::string_view(argv[1]) == "--base") {
-        if (argc < 8 || std::string_view(argv[3]) != "--signature" || std::string_view(argv[5]) != "--signature-next") {
+    std::vector<std::string> args(argv + 1, argv + argc);
+    if (args.size() >= 2 && args[0] == "--case-table") {
+        if (!load_case_table(args[1])) return 1;
+        args.erase(args.begin(), args.begin() + 2);
+    }
+
+    if (!args.empty() && args[0] == "--base") {
+        if (args.size() < 7 || args[2] != "--signature" || args[4] != "--signature-next") {
             std::cerr << usage;
             return 2;
         }
         State state;
-        state.base = argv[2];
-        state.signature = argv[4];
-        state.signature_next = argv[6];
-        int next = 7;
-        if (std::string_view(argv[next]) == "--launcher-layer") {
-            if (argc < 10) {
+        state.base = args[1];
+        state.signature = args[3];
+        state.signature_next = args[5];
+        size_t next = 6;
+        if (args[next] == "--launcher-layer") {
+            if (args.size() < 9) {
                 std::cerr << usage;
                 return 2;
             }
-            state.launcher_layer = argv[next + 1];
+            state.launcher_layer = args[next + 1];
             next += 2;
         }
-        state.writable = argv[next];
+        state.writable = args[next];
         state.base_new = state.base.string() + ".new";
         state.base_old = state.base.string() + ".old";
         state.journal = state.base.string() + ".journal";
-        std::vector<fs::path> layer_dirs(argv + next + 1, argv + argc);
+        std::vector<fs::path> layer_dirs(args.begin() + next + 1, args.end());
         return merge_with_base(state, layer_dirs);
     }
 
-    if (argc < 3) {
+    if (args.size() < 2) {
         std::cerr << usage;
         return 2;
     }
-    std::vector<fs::path> source_dirs(argv + 2, argv + argc);
-    return merge_two_way(argv[1], source_dirs);
+    std::vector<fs::path> source_dirs(args.begin() + 1, args.end());
+    return merge_two_way(args[0], source_dirs);
 }
