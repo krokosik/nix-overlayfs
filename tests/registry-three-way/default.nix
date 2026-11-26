@@ -357,6 +357,46 @@ merge abort "$PWD/layer2"
 test ! -e abort-state/registry-base.journal
 has abort '"Untouched"="2"'
 
+# Recovery checks what it completes against the journal: a damaged journal,
+# a missing staged hive or one from another transaction, or a hive changed
+# since, change nothing and stop the launch, with what to remove.
+pending() {
+  rm -rf "$1" "$1-state"
+  merge "$1" "$PWD/layer1"
+  cp user-edited.reg "$1/user.reg"
+  printf '%s\n' "$PWD/layer2" > "tmp/$1-next"
+  NIX_OVERLAYFS_REGISTRY_TEST_INTERRUPT=3 merge-wine-registries --case-table ${caseTable} \
+    --base "$PWD/$1-state/registry-base" --signature "$1-state/registry-sources" \
+    --signature-next "tmp/$1-next" "$PWD/$1" "$PWD/layer2" || true
+  test -e "$1-state/registry-base.journal"
+}
+snapshot() {
+  find "$1" "$1-state" -type f -exec cksum {} + | sort
+}
+for damage in empty-journal truncated-journal missing-staged other-staged changed-hive; do
+  pending tamper
+  case "$damage" in
+    empty-journal) : > tamper-state/registry-base.journal ;;
+    truncated-journal) head -n 2 tamper-state/registry-base.journal > journal.tmp && cat journal.tmp > tamper-state/registry-base.journal ;;
+    missing-staged) rm tamper/.user.reg.nix-overlayfs-new ;;
+    other-staged) cp tamper/user.reg tamper/.user.reg.nix-overlayfs-new ;;
+    changed-hive) sed -i 's/^"Changed"=.*/"Changed"="saved meanwhile"/' tamper/user.reg ;;
+  esac
+  snapshot tamper > tamper-before.txt
+  ! merge tamper "$PWD/layer2" 2> tamper.log
+  cat tamper.log
+  grep -F 'cannot be completed safely' tamper.log
+  grep -F 'To start over' tamper.log
+  grep -F 'not starting' tamper.log
+  snapshot tamper | diff -u tamper-before.txt -
+done
+# Removing what the message names starts over: the writable values win.
+rm -rf tamper-state/registry-base tamper-state/registry-base.new tamper-state/registry-base.old \
+  tamper-state/registry-base.journal tamper/.*.nix-overlayfs-new
+merge tamper "$PWD/layer2"
+has tamper '"Changed"="saved meanwhile"'
+test -s tamper-state/registry-sources
+
 # Values are compared as Wine sees them: key paths and value names without
 # regard to case, @ as the empty name, data by type and bytes whatever form
 # it is written in. A type change is a change.

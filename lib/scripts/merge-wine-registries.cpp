@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -928,69 +929,262 @@ struct State {
 };
 
 const std::string manifest_header = "nix-overlayfs registry base 1";
+const std::string journal_header = "nix-overlayfs registry journal 1";
+const std::string binding_header = "nix-overlayfs registry binding 1";
 
 fs::path staged_path(const fs::path &dir, const std::string &reg_name)
 {
     return dir / ("." + reg_name + ".nix-overlayfs-new");
 }
 
-/* Finishes a commit that was interrupted after its journal was written
-   (everything it needs is staged and verified), or drops what an
-   interrupted merge staged before that. */
+std::string fnv_hex(std::string_view text)
+{
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (const char c : text) {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 0x100000001b3ull;
+    }
+    char out[32];
+    std::snprintf(out, sizeof(out), "%016llx", static_cast<unsigned long long>(hash));
+    return out;
+}
+
+/* A fingerprint as one word ("absent" for no file), for the journal. */
+std::string fingerprint_word(const fs::path &path)
+{
+    std::error_code ec;
+    if (!fs::exists(path, ec)) return "absent";
+    auto print = fingerprint(path);
+    if (!print) return "unreadable";
+    std::replace(print->begin(), print->end(), ' ', ':');
+    return *print;
+}
+
+/* Checks the base record in DIR against its manifest; fills BASES (when
+   given) and SOURCES, the layers it was made for, or says WHY not. */
+bool check_base_dir(const fs::path &dir, std::vector<std::optional<Registry>> *bases, std::string &sources,
+                    std::string &why)
+{
+    std::error_code ec;
+    if (!fs::is_directory(dir, ec)) {
+        why = "not a directory";
+        return false;
+    }
+    const auto manifest = read_file(dir / "manifest");
+    if (!manifest) {
+        why = "no manifest";
+        return false;
+    }
+    std::istringstream lines(*manifest);
+    std::string line;
+    if (!std::getline(lines, line) || line != manifest_header) {
+        why = "unknown manifest";
+        return false;
+    }
+    std::map<std::string, std::string> fingerprints;
+    sources.clear();
+    while (std::getline(lines, line)) {
+        if (starts_with(line, "hive ")) {
+            const auto space = line.find(' ', 5);
+            if (space == std::string::npos) {
+                why = "malformed manifest";
+                return false;
+            }
+            fingerprints[line.substr(5, space - 5)] = line.substr(space + 1);
+        } else if (starts_with(line, "source ")) {
+            sources += line.substr(7) + "\n";
+        } else {
+            why = "malformed manifest";
+            return false;
+        }
+    }
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        const auto found = fingerprints.find(reg_names[i]);
+        if (found == fingerprints.end()) {
+            why = "the manifest does not name " + reg_names[i];
+            return false;
+        }
+        const fs::path path = dir / reg_names[i];
+        if (found->second == "absent") {
+            if (fs::exists(path, ec)) {
+                why = reg_names[i] + " should not exist";
+                return false;
+            }
+            continue;
+        }
+        const auto actual = fingerprint(path);
+        if (!actual) {
+            why = reg_names[i] + " is missing";
+            return false;
+        }
+        if (*actual != found->second) {
+            why = reg_names[i] + " does not match the manifest";
+            return false;
+        }
+        std::string error;
+        auto parsed = parse_registry(path, error);
+        if (!parsed) {
+            why = reg_names[i] + ": " + error;
+            return false;
+        }
+        if (bases) (*bases)[i] = std::move(parsed);
+    }
+    return true;
+}
+
+/* The journal of a commit: what it replaces, with the fingerprints of the
+   staged files and of what they replace, closed by a checksum. */
+struct Journal {
+    struct Hive {
+        std::string name;
+        std::string staged;
+        std::string before;
+    };
+    std::vector<Hive> hives;
+    std::string base_new;
+    std::string base_before;
+};
+
+std::string format_journal(const Journal &journal)
+{
+    std::string text = journal_header + "\n";
+    for (const auto &hive : journal.hives) text += "hive " + hive.name + " " + hive.staged + " " + hive.before + "\n";
+    text += "base " + journal.base_new + " " + journal.base_before + "\n";
+    return text + "end " + fnv_hex(text) + "\n";
+}
+
+std::optional<Journal> parse_journal(const std::string &text)
+{
+    const size_t end = text.rfind("end ");
+    if (end == std::string::npos || (end > 0 && text[end - 1] != '\n')) return std::nullopt;
+    const std::string body = text.substr(0, end);
+    if (text.substr(end) != "end " + fnv_hex(body) + "\n") return std::nullopt;
+    std::istringstream lines(body);
+    std::string line;
+    if (!std::getline(lines, line) || line != journal_header) return std::nullopt;
+    Journal journal;
+    bool have_base = false;
+    while (std::getline(lines, line)) {
+        std::istringstream words(line);
+        std::string kind;
+        words >> kind;
+        if (kind == "hive") {
+            Journal::Hive hive;
+            if (!(words >> hive.name >> hive.staged >> hive.before)) return std::nullopt;
+            if (std::find(reg_names.begin(), reg_names.end(), hive.name) == reg_names.end()) return std::nullopt;
+            journal.hives.push_back(hive);
+        } else if (kind == "base") {
+            if (!(words >> journal.base_new >> journal.base_before)) return std::nullopt;
+            have_base = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!have_base) return std::nullopt;
+    return journal;
+}
+
+/* Finishes a commit that was interrupted after its journal was written,
+   or drops what an interrupted merge staged before that. The journal
+   names every file the commit moves, with fingerprints: recovery first
+   checks that each staged file is the one the journal names and each
+   destination is either what it replaces (not moved yet) or the staged
+   file (moved already). Anything else (a damaged journal, a missing or
+   other staged file, a destination changed since) changes nothing: the
+   material stays for inspection and recovery fails, with what to remove
+   to start over. */
 bool recover(const State &state)
 {
     std::error_code ec;
-    if (fs::exists(state.journal, ec)) {
-        const auto journal = read_file(state.journal);
-        if (!journal) {
-            std::cerr << "error: cannot read " << state.journal << '\n';
-            return false;
+    if (!fs::exists(state.journal, ec)) {
+        for (const auto &reg_name : reg_names) fs::remove(staged_path(state.writable, reg_name), ec);
+        fs::remove_all(state.base_new, ec);
+        if (fs::exists(state.base_old, ec)) {
+            if (fs::exists(state.base, ec)) fs::remove_all(state.base_old, ec);
+            else fs::rename(state.base_old, state.base, ec);
         }
-        std::istringstream lines(*journal);
-        std::string word;
-        std::string reg_name;
-        while (lines >> word >> reg_name) {
-            if (word != "hive") continue;
-            const fs::path staged = staged_path(state.writable, reg_name);
-            if (fs::exists(staged, ec)) {
-                fs::rename(staged, state.writable / reg_name, ec);
-                if (ec) {
-                    std::cerr << "error: failed to replace " << state.writable / reg_name << ": " << ec.message() << '\n';
-                    return false;
-                }
-            }
-        }
-        if (fs::exists(state.base_new, ec)) {
-            if (fs::exists(state.base, ec)) {
-                fs::remove_all(state.base_old, ec);
-                fs::rename(state.base, state.base_old, ec);
-                if (ec) {
-                    std::cerr << "error: failed to move " << state.base << " aside: " << ec.message() << '\n';
-                    return false;
-                }
-            }
-            fs::rename(state.base_new, state.base, ec);
-            if (ec) {
-                std::cerr << "error: failed to replace " << state.base << ": " << ec.message() << '\n';
-                return false;
-            }
-        }
-        fs::remove_all(state.base_old, ec);
-        fs::remove(state.journal, ec);
-        if (ec) {
-            std::cerr << "error: failed to remove " << state.journal << ": " << ec.message() << '\n';
-            return false;
-        }
-        std::cerr << "nix-overlayfs: completed an interrupted registry merge of " << state.writable << '\n';
         return true;
     }
 
-    for (const auto &reg_name : reg_names) fs::remove(staged_path(state.writable, reg_name), ec);
-    fs::remove_all(state.base_new, ec);
-    if (fs::exists(state.base_old, ec)) {
-        if (fs::exists(state.base, ec)) fs::remove_all(state.base_old, ec);
-        else fs::rename(state.base_old, state.base, ec);
+    auto inconsistent = [&](const std::string &why) {
+        std::cerr << "error: the interrupted registry merge of " << state.writable << " cannot be completed safely ("
+                  << why << "); nothing was changed. To start over, with the writable values on top as in a first"
+                  << " merge, remove " << state.journal << ", " << state.base << ", " << state.base_new << ", "
+                  << state.base_old << " and the files .*.nix-overlayfs-new in " << state.writable << ".\n";
+        return false;
+    };
+
+    const auto text = read_file(state.journal);
+    if (!text) return inconsistent("the journal cannot be read");
+    const auto journal = parse_journal(*text);
+    if (!journal) return inconsistent("the journal is incomplete or damaged");
+
+    /* Check everything first. */
+    std::vector<bool> move(journal->hives.size(), false);
+    for (size_t i = 0; i < journal->hives.size(); ++i) {
+        const auto &hive = journal->hives[i];
+        const fs::path staged = staged_path(state.writable, hive.name);
+        const std::string destination = fingerprint_word(state.writable / hive.name);
+        if (fs::exists(staged, ec)) {
+            if (fingerprint_word(staged) != hive.staged) return inconsistent("the staged " + hive.name + " is not the one the journal names");
+            if (destination != hive.before) return inconsistent(hive.name + " changed since the merge stopped");
+            move[i] = true;
+        } else if (destination != hive.staged) {
+            return inconsistent("the staged " + hive.name + " is missing, and " + hive.name + " is not the staged one");
+        }
     }
+    for (const auto &reg_name : reg_names) {
+        bool listed = false;
+        for (const auto &hive : journal->hives) listed = listed || hive.name == reg_name;
+        if (!listed && fs::exists(staged_path(state.writable, reg_name), ec)) {
+            return inconsistent("a staged " + reg_name + " the journal does not name");
+        }
+    }
+    const bool swap = fs::exists(state.base_new, ec);
+    std::string sources;
+    std::string why;
+    if (swap) {
+        if (fingerprint_word(state.base_new / "manifest") != journal->base_new) return inconsistent("the staged base record is not the one the journal names");
+        if (!check_base_dir(state.base_new, nullptr, sources, why)) return inconsistent("the staged base record: " + why);
+        const fs::path before = fs::exists(state.base, ec) ? state.base : state.base_old;
+        if (fingerprint_word(before / "manifest") != journal->base_before) return inconsistent("the base record changed since the merge stopped");
+    } else {
+        if (fingerprint_word(state.base / "manifest") != journal->base_new) return inconsistent("the staged base record is missing, and the base record is not the staged one");
+        if (!check_base_dir(state.base, nullptr, sources, why)) return inconsistent("the base record: " + why);
+    }
+
+    /* Then complete it. */
+    for (size_t i = 0; i < journal->hives.size(); ++i) {
+        if (!move[i]) continue;
+        const auto &name = journal->hives[i].name;
+        fs::rename(staged_path(state.writable, name), state.writable / name, ec);
+        if (ec) {
+            std::cerr << "error: failed to replace " << state.writable / name << ": " << ec.message() << '\n';
+            return false;
+        }
+    }
+    if (swap) {
+        if (fs::exists(state.base, ec)) {
+            fs::remove_all(state.base_old, ec);
+            fs::rename(state.base, state.base_old, ec);
+            if (ec) {
+                std::cerr << "error: failed to move " << state.base << " aside: " << ec.message() << '\n';
+                return false;
+            }
+        }
+        fs::rename(state.base_new, state.base, ec);
+        if (ec) {
+            std::cerr << "error: failed to replace " << state.base << ": " << ec.message() << '\n';
+            return false;
+        }
+    }
+    fs::remove_all(state.base_old, ec);
+    fs::remove(state.journal, ec);
+    if (ec) {
+        std::cerr << "error: failed to remove " << state.journal << ": " << ec.message() << '\n';
+        return false;
+    }
+    std::cerr << "nix-overlayfs: completed an interrupted registry merge of " << state.writable << '\n';
     return true;
 }
 
@@ -1008,42 +1202,9 @@ bool load_base(const State &state, std::vector<std::optional<Registry>> &bases)
         return false;
     };
 
-    if (!fs::is_directory(state.base, ec)) return damaged("not a directory");
-    const auto manifest = read_file(state.base / "manifest");
-    if (!manifest) return damaged("no manifest");
-
-    std::istringstream lines(*manifest);
-    std::string line;
-    if (!std::getline(lines, line) || line != manifest_header) return damaged("unknown manifest");
-    std::map<std::string, std::string> fingerprints;
     std::string sources;
-    while (std::getline(lines, line)) {
-        if (starts_with(line, "hive ")) {
-            const auto space = line.find(' ', 5);
-            if (space == std::string::npos) return damaged("malformed manifest");
-            fingerprints[line.substr(5, space - 5)] = line.substr(space + 1);
-        } else if (starts_with(line, "source ")) {
-            sources += line.substr(7) + "\n";
-        } else {
-            return damaged("malformed manifest");
-        }
-    }
-
-    for (size_t i = 0; i < reg_names.size(); ++i) {
-        const auto found = fingerprints.find(reg_names[i]);
-        if (found == fingerprints.end()) return damaged("the manifest does not name " + reg_names[i]);
-        const fs::path path = state.base / reg_names[i];
-        if (found->second == "absent") {
-            if (fs::exists(path, ec)) return damaged(reg_names[i] + " should not exist");
-            continue;
-        }
-        const auto actual = fingerprint(path);
-        if (!actual) return damaged(reg_names[i] + " is missing");
-        if (*actual != found->second) return damaged(reg_names[i] + " does not match the manifest");
-        std::string error;
-        bases[i] = parse_registry(path, error);
-        if (!bases[i]) return damaged(reg_names[i] + ": " + error);
-    }
+    std::string why;
+    if (!check_base_dir(state.base, &bases, sources, why)) return damaged(why);
 
     /* The signature names the Nix layers of the last successful merge.
        When it names other layers than the base record was made for, a
@@ -1211,11 +1372,15 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
         return 1;
     }
     checkpoint();
-    std::string journal;
+    Journal journal;
     for (size_t i = 0; i < reg_names.size(); ++i) {
-        if (!staged[i].empty()) journal += "hive " + reg_names[i] + "\n";
+        if (staged[i].empty()) continue;
+        journal.hives.push_back(
+            {reg_names[i], fingerprint_word(staged[i]), fingerprint_word(state.writable / reg_names[i])});
     }
-    if (!replace_file(state.journal, journal)) {
+    journal.base_new = fingerprint_word(state.base_new / "manifest");
+    journal.base_before = fingerprint_word(state.base / "manifest");
+    if (!replace_file(state.journal, format_journal(journal))) {
         discard_staged();
         return 1;
     }

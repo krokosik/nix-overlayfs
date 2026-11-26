@@ -328,8 +328,14 @@ is dropped; one stopped after it is completed, before anything else. Both
 happen right after a failed merge, in the same launch, and again at the
 start of the next merge (for a launcher that was killed). A launch never
 starts Wine while a journal is left: Wine would save to hives that
-completing the merge then replaces. If the merge cannot be completed, the
-launch stops with an error. Otherwise a failed merge keeps the old base, has
+completing the merge then replaces. The journal names every file the commit
+moves, with fingerprints of the staged files and of what they replace, and
+ends with a checksum. Recovery checks all of it before it moves anything: a
+damaged or cut-off journal, a staged file that is missing or not the one
+named, or a hive changed since the merge stopped changes nothing and stops
+the launch with an error naming what to remove to start over (the journal,
+the base record and its `.new`/`.old`, the staged `.*.nix-overlayfs-new`
+files; the next merge then runs as a first merge, writable values on top). Otherwise a failed merge keeps the old base, has
 no signature and lets the launch go on; the next launch merges again. Delete
 `.nix-overlayfs/registry-sources` to merge on the next launch anyway.
 
