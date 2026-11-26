@@ -304,18 +304,28 @@ the merge: taking it for no record would make every packaged value the user's.
 Delete `.nix-overlayfs/registry-base` to merge once with the writable values on
 top and record it anew.
 
-A record made for other layers than the signature names (the layers of the last
-merge: a launcher without base records merged in between, or the record comes
-from another state) does not say what the writable hives got from the layers,
-and is not trusted. It is rebuilt from the layers the signature names, which are
-store paths and exist as long as a package that uses them does: a value that
-older merge brought in follows the layers from now on, and a value it kept from
-the writable layer over its layers stays the user's, as it was for that launcher.
-If one of those layers is gone, the history is unknown and the merge goes as
-without a record, in the direction that loses nothing of the user's: the
-writable values win once, and the record is made anew. Both cases print a
-warning. Without a signature (the last merge failed) the record is the last
-successful merge's and is used.
+Each commit also writes `.nix-overlayfs/registry-base.binding`: the fingerprints
+of the signature and of the base record's manifest it wrote. When the signature
+names other layers than the base record was made for, only what can be traced
+to the last commit is trusted, and the merge warns:
+
+- The signature is the commit's, the base record is not (another state's, or
+  replaced): the base is rebuilt from the layers the signature names, which are
+  store paths and exist as long as a package that uses them does.
+- The base record is the commit's, the signature is not (a launcher without base
+  records merged since, or the file was edited): the base record still says
+  what the layers gave for every value it has, since such a merge keeps the
+  writable value over its layers'. A value it lacks is taken as the layers' only
+  if the layers the signature names give it and can have been merged into the
+  writable hive (they exist, and every value they give is in it); otherwise
+  only the base record is used.
+- Neither can be traced (or, in the first case, the named layers are gone): the
+  history is unknown, and the merge goes as without a record, in the direction
+  that loses nothing of the user's: the writable values win once, and the
+  record is made anew.
+
+Without a signature (the last merge failed) the record is the last successful
+merge's and is used.
 
 A hive that cannot be read or parsed fails the merge before anything is
 written. Every new hive and the new base record

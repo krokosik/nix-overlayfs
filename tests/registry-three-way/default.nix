@@ -242,10 +242,12 @@ merge fail "$PWD/layer1"
 has fail '"Untouched"="kept"'
 grep -Fx '"Untouched"="1"' fail-state/registry-base/user.reg
 
-# A base made for other layers than the signature's (the last merge) is not
-# trusted. With those layers still there, it is rebuilt from them.
-# An older launcher without base records merged layers that add New=2 in
-# between: back on this launcher, New follows the layers to 3.
+# The signature and the base record are bound to each other by the commit
+# that wrote them; when they disagree, only what can be traced is trusted.
+# An older launcher without base records merged layers that add New=2 and
+# rewrote the signature: the base record still holds for the values it has
+# (such a merge keeps the writable value), and New, which it lacks, came
+# from the layers the signature names. Both follow the layers again.
 merge hist "$PWD/layer1"
 merge-wine-registries hist "$PWD/layer2" "$PWD/hist"
 printf '%s\n' "$PWD/layer2" > hist-state/registry-sources
@@ -255,13 +257,12 @@ layer layer-new3 <<'EOF'
 "New"="3"
 EOF
 merge hist "$PWD/layer-new3" 2> base.log
-grep -F 'rebuilt it from the layers that merge used' base.log
+grep -F 'the layer signature was rewritten' base.log
 has hist '"New"="3"'
-# (The older launcher's merge kept the writable "Untouched"="1" over its
-# layers' 2, so for that merge it was the writable layer's; it stays so.)
-has hist '"Untouched"="1"'
-# Another state's base record (valid, but for other layers), whose value
-# happens to be the user's, does not give the user's value to the layers.
+has hist '"Untouched"="3"'
+# Another state's base record (valid, but not the one this state's last
+# commit wrote), whose value happens to be the user's, does not give the
+# user's value to the layers: it is rebuilt from the signature's layers.
 merge own "$PWD/layer1"
 sed -i 's/^"Changed"="1"$/"Changed"="user"/' own/user.reg
 layer layer-user <<'EOF'
@@ -275,14 +276,45 @@ merge own "$PWD/layer2" 2> base.log
 grep -F 'rebuilt it from the layers that merge used' base.log
 has own '"Changed"="user"'
 has own '"Untouched"="2"'
-# With those layers gone the history is unknown: the writable values win
-# once, as without a base record.
+# A signature edited to name a layer that has the user's value: the base
+# record says the layers gave "1", so "user" stays the user's.
+merge edited "$PWD/layer1"
+sed -i 's/^"Changed"="1"$/"Changed"="user"/' edited/user.reg
+printf '%s\n' "$PWD/layer-user" > edited-state/registry-sources
+merge edited "$PWD/layer2" 2> base.log
+grep -F 'the layer signature was rewritten' base.log
+has edited '"Changed"="user"'
+has edited '"Untouched"="2"'
+# ... and one that names layers whose values are not in the writable hive
+# (they cannot have been merged into it) is not used for what the base lacks.
+merge edited2 "$PWD/layer1"
+printf '"Mine"="user"\n' >> edited2/user.reg
+layer layer-mine <<'EOF'
+[Software\\Pkg]
+"Mine"="user"
+"NeverMerged"="1"
+EOF
+printf '%s\n' "$PWD/layer-mine" > edited2-state/registry-sources
+merge edited2 "$PWD/layer2" 2> base.log
+grep -F 'cannot have been merged into' base.log
+has edited2 '"Mine"="user"'
+# With the named layers gone, only the base record is used.
 printf '%s\n' /nix/store/gone-layers > fail-state/registry-sources
 merge fail "$PWD/layer2" 2> base.log
-grep -F 'those layers are gone' base.log
+grep -F 'layers the signature names are gone' base.log
 has fail '"Untouched"="kept"'
 has fail '"New"="2"'
 grep -Fx '"Untouched"="2"' fail-state/registry-base/user.reg
+# Neither the base record nor the signature traceable: the writable values
+# win once.
+merge lost "$PWD/layer1"
+sed -i 's/^"Changed"="1"$/"Changed"="user"/' lost/user.reg
+rm lost-state/registry-base.binding
+printf '%s\n' "$PWD/layer-user" > lost-state/registry-sources
+merge lost "$PWD/layer2" 2> base.log
+grep -F 'neither it nor the layer signature can be traced' base.log
+has lost '"Changed"="user"'
+has lost '"Untouched"="1"'
 
 # An interrupted merge is completed (or, before its journal, dropped) on
 # the next run, at every step: the result is the same as without the

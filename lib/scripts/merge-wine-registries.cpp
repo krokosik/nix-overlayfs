@@ -922,6 +922,8 @@ struct State {
     fs::path base_new;
     fs::path base_old;
     fs::path journal;
+    /* Ties the signature and the base record of the last commit together. */
+    fs::path binding;
     fs::path signature;
     fs::path signature_next;
     /* The launcher's integration layer, one of the layers, or empty. */
@@ -1188,10 +1190,56 @@ bool recover(const State &state)
     return true;
 }
 
+std::string text_fingerprint(std::string_view text)
+{
+    return std::to_string(text.size()) + ":" + fnv_hex(text);
+}
+
+std::string format_binding(const std::string &signature, const std::string &manifest)
+{
+    const std::string body = binding_header + "\nsignature " + text_fingerprint(signature) + "\nmanifest " + manifest + "\n";
+    return body + "end " + fnv_hex(body) + "\n";
+}
+
+/* What the last commit's binding says: the fingerprints of the signature
+   and of the base record's manifest it wrote. */
+struct Binding {
+    std::string signature;
+    std::string manifest;
+};
+
+std::optional<Binding> read_binding(const fs::path &path)
+{
+    const auto text = read_file(path);
+    if (!text) return std::nullopt;
+    const size_t end = text->rfind("end ");
+    if (end == std::string::npos) return std::nullopt;
+    const std::string body = text->substr(0, end);
+    if (text->substr(end) != "end " + fnv_hex(body) + "\n") return std::nullopt;
+    std::istringstream lines(body);
+    std::string header;
+    std::string word;
+    Binding binding;
+    if (!std::getline(lines, header) || header != binding_header) return std::nullopt;
+    if (!(lines >> word >> binding.signature) || word != "signature") return std::nullopt;
+    if (!(lines >> word >> binding.manifest) || word != "manifest") return std::nullopt;
+    return binding;
+}
+
+/* How far the base record can be trusted against the signature. */
+struct BaseHistory {
+    /* The signature was rewritten after the last commit (by a launcher
+       without base records, or by hand); CLAIM is what the layers it names
+       give, to be checked against the writable hives. */
+    bool rewritten = false;
+    std::vector<std::optional<Registry>> claim = std::vector<std::optional<Registry>>(3);
+    bool claim_usable = false;
+};
+
 /* Reads the base record into BASES. No record at all is fine (a writable
    layer from before base records: the writable hives win). A record that
    does not match its manifest is an error. */
-bool load_base(const State &state, std::vector<std::optional<Registry>> &bases)
+bool load_base(const State &state, std::vector<std::optional<Registry>> &bases, BaseHistory &history)
 {
     std::error_code ec;
     if (!fs::exists(state.base, ec)) return true;
@@ -1206,43 +1254,69 @@ bool load_base(const State &state, std::vector<std::optional<Registry>> &bases)
     std::string why;
     if (!check_base_dir(state.base, &bases, sources, why)) return damaged(why);
 
-    /* The signature names the Nix layers of the last successful merge.
-       When it names other layers than the base record was made for, a
-       launcher without base records (or another state's base record)
-       came in between, and the base does not say what the writable hives
-       got from the layers: trusting it would take values for the user's
-       that came from those layers, or the user's for the layers'. The base
-       is then rebuilt from the layers the signature names, which is what
-       that merge gave; they are store paths, there as long as a package
-       that uses them is. If one of them is gone, the history is unknown,
-       and the merge is the one without a base record: the writable values
-       win once (nothing of the user's is lost), and the base is recorded
-       anew. Without a signature (the last merge failed) the base record
-       is the last that succeeded and is used. */
+    /* The signature names the Nix layers of the last successful merge,
+       and the binding written with it the fingerprints of that signature
+       and of the base record's manifest. Without a signature (the last
+       merge failed) the base record is the last that succeeded and is
+       used; with one that names the layers the base was made for, too.
+       Otherwise only what can be traced is trusted:
+       - the signature is the one the last commit wrote, but the base
+         record is not (another state's, or replaced): the base is rebuilt
+         from the layers the signature names, what that merge gave;
+       - the base record is the one the last commit wrote, but the
+         signature is not (a launcher without base records merged since,
+         or it was edited): the base record still says what the layers gave
+         for every value it has, since such merges keep the writable value
+         over the layers'. For the values it lacks, the layers the new
+         signature names are taken only if they can have been merged into
+         the writable hives (they exist, and every value they give is
+         there); see merge_with_base;
+       - neither can be traced: the history is unknown, and the merge goes
+         as without a base record, in the direction that loses nothing of
+         the user's (the writable values win once). */
     const auto recorded = read_file(state.signature);
-    if (recorded && *recorded != sources) {
-        std::vector<fs::path> layers;
-        bool complete = true;
-        std::istringstream paths(*recorded);
-        std::string path;
-        while (std::getline(paths, path)) {
-            if (path.empty()) continue;
-            if (!fs::is_directory(path, ec)) complete = false;
-            layers.emplace_back(path);
-        }
-        for (size_t i = 0; complete && i < reg_names.size(); ++i) {
-            bases[i].reset();
-            if (!merge_one(reg_names[i], layers, bases[i])) complete = false;
-        }
-        if (complete) {
-            std::cerr << "warning: the registry base record " << state.base
-                      << " was made for other Nix layers than the last merge; rebuilt it from the layers that merge used\n";
+    if (!recorded || *recorded == sources) return true;
+
+    const auto binding = read_binding(state.binding);
+    const bool base_ours = binding && binding->manifest == fingerprint_word(state.base / "manifest");
+    const bool signature_ours = binding && binding->signature == text_fingerprint(*recorded);
+
+    std::vector<fs::path> layers;
+    bool layers_exist = true;
+    std::istringstream paths(*recorded);
+    std::string path;
+    while (std::getline(paths, path)) {
+        if (path.empty()) continue;
+        if (!fs::is_directory(path, ec)) layers_exist = false;
+        layers.emplace_back(path);
+    }
+    std::vector<std::optional<Registry>> given(reg_names.size());
+    for (size_t i = 0; layers_exist && i < reg_names.size(); ++i) {
+        if (!merge_one(reg_names[i], layers, given[i])) layers_exist = false;
+    }
+
+    const std::string what = "warning: the registry base record " + state.base.string();
+    if (signature_ours && !base_ours) {
+        if (layers_exist) {
+            bases = std::move(given);
+            std::cerr << what << " is not the one the last merge recorded; rebuilt it from the layers that merge used\n";
         } else {
             for (auto &base : bases) base.reset();
-            std::cerr << "warning: the registry base record " << state.base
-                      << " was made for other Nix layers than the last merge, and those layers are gone;"
+            std::cerr << what << " is not the one the last merge recorded, and the layers that merge used are gone;"
                       << " merging without it (the writable values win once)\n";
         }
+    } else if (base_ours && !signature_ours) {
+        history.rewritten = true;
+        history.claim = std::move(given);
+        history.claim_usable = layers_exist;
+        std::cerr << what << ": the layer signature was rewritten after the last merge with it (by a launcher"
+                  << " without base records, or by hand); "
+                  << (layers_exist ? "values the base lacks follow the layers the signature names only where they can have come from them\n"
+                                   : "the layers the signature names are gone, so only the base record is used\n");
+    } else {
+        for (auto &base : bases) base.reset();
+        std::cerr << what << ": neither it nor the layer signature can be traced to the last merge;"
+                  << " merging without it (the writable values win once)\n";
     }
     return true;
 }
@@ -1259,7 +1333,8 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
     if (!recover(state)) return 1;
 
     std::vector<std::optional<Registry>> bases(reg_names.size());
-    if (!load_base(state, bases)) return 1;
+    BaseHistory history;
+    if (!load_base(state, bases, history)) return 1;
 
     const auto signature_next = read_file(state.signature_next);
     if (!signature_next) {
@@ -1277,6 +1352,32 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
             std::cerr << "error: the writable hive " << state.writable / reg_names[i]
                       << " has deletions ([-key] or \"name\"=-), which only layers may have\n";
             return 1;
+        }
+
+        /* After a rewritten signature, the values the base record lacks
+           are taken from the layers it names, if those can have been
+           merged into this hive: a merge without base records adds every
+           value they give, so each must be in the writable hive. */
+        if (history.rewritten && writable && bases[i] && history.claim_usable && history.claim[i]) {
+            bool contained = true;
+            for (const auto &[id, key] : history.claim[i]->keys) {
+                const auto in_base = bases[i]->keys.find(id);
+                const auto in_writable = writable->keys.find(id);
+                for (const auto &value : key.values) {
+                    if (in_base != bases[i]->keys.end() && in_base->second.values.count(value.first)) continue;
+                    if (in_writable == writable->keys.end() || !in_writable->second.values.count(value.first)) {
+                        contained = false;
+                    }
+                }
+            }
+            if (contained) {
+                Registry effective = *history.claim[i];
+                apply_layer(effective, *bases[i]);
+                bases[i] = std::move(effective);
+            } else {
+                std::cerr << "warning: the layers the signature names cannot have been merged into "
+                          << state.writable / reg_names[i] << "; only the base record is used for it\n";
+            }
         }
 
         /* Earlier launchers wrote the integration layer's keys into the
@@ -1418,6 +1519,7 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
     }
     checkpoint();
 
+    if (!replace_file(state.binding, format_binding(*signature_next, fingerprint_word(state.base / "manifest")))) return 1;
     return replace_file(state.signature, *signature_next) ? 0 : 1;
 }
 
@@ -1448,6 +1550,7 @@ int main(int argc, char **argv)
         state.base_new = state.base.string() + ".new";
         state.base_old = state.base.string() + ".old";
         state.journal = state.base.string() + ".journal";
+        state.binding = state.base.string() + ".binding";
         return recover(state) ? 0 : 1;
     }
 
@@ -1473,6 +1576,7 @@ int main(int argc, char **argv)
         state.base_new = state.base.string() + ".new";
         state.base_old = state.base.string() + ".old";
         state.journal = state.base.string() + ".journal";
+        state.binding = state.base.string() + ".binding";
         std::vector<fs::path> layer_dirs(args.begin() + next + 1, args.end());
         return merge_with_base(state, layer_dirs);
     }
