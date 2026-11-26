@@ -9,7 +9,8 @@
 # and APPDIR's own. The merge is three-way: registry-base/ next to SIGNATURE
 # keeps what the layers gave at the last successful merge, so a value the
 # user left as it was follows the layers, and one the user changed, added or
-# deleted stays as the user left it (see merge-wine-registries). Writes the
+# deleted stays as the user left it (see merge-wine-registries); a base
+# record that does not match its manifest fails the merge. Writes the
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
 # differ from SIGNATURE (the last successful merge) or a registry file is
 # missing. A failed merge removes SIGNATURE, so the next call merges again;
@@ -51,19 +52,18 @@ merge() {
     && [ -f "$appdir/user.reg" ] \
     && [ -f "$appdir/userdef.reg" ] \
     && [ -f "$signature" ] \
-    && cmp -s "$signature" "$signature_next"; then
+    && cmp -s "$signature" "$signature_next" \
+    && [ ! -e "$base.journal" ]; then
     return 0
   fi
 
   # A failed merge does not stop the launch (merge-wine-registries reports
   # its own errors), but it is not recorded either: the next launch merges
   # again.
-  # The merge replaces the base record hive by hive, together with the
-  # hives; the signature is recorded last.
-  if merge-wine-registries --base "$base" "$appdir" "${layers[@]}"; then
-    cp -f "$signature_next" "$signature.new"
-    mv -f "$signature.new" "$signature"
-  else
+  # merge-wine-registries also completes a merge that was interrupted,
+  # replaces the base record and records the signature last.
+  if ! merge-wine-registries --base "$base" --signature "$signature" \
+    --signature-next "$signature_next" "$appdir" "${layers[@]}"; then
     echo "warning: nix-overlayfs: merging the registry of $appdir failed; it is merged again on the next launch" >&2
     rm -f "$signature"
   fi

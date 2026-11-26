@@ -154,7 +154,7 @@ hive old user 'User\\S-1-5-21-0-0-0-1000' <<'EOF'
 "Deleted"="1"
 EOF
 merge old "$PWD/layer1"
-test ! -e old-state/registry-base/.user.reg.nix-overlayfs-new
+test -z "$(find old old-state -name '.*.nix-overlayfs-*')"
 has old '"Untouched"="1"'
 has old '"Changed"="old user"'
 has old '"Dropped"="1"'
@@ -184,15 +184,18 @@ test ! -e fail-state/registry-sources
 test -z "$(find fail fail-state -name '.*.nix-overlayfs-new')"
 
 cp user-before.reg fail/user.reg
-mv fail-state/registry-base base-saved
-touch fail-state/registry-base
+mkdir fail-state/registry-base.new
+touch fail-state/registry-base.new/blocker
+chmod a-w fail-state/registry-base.new
 merge fail "$PWD/layer2" 2> fail.log
-grep -F 'cannot create' fail.log
+cat fail.log
+grep -F 'failed to write' fail.log
 grep -F 'merged again on the next launch' fail.log
 cmp user-before.reg fail/user.reg
+diff -r base-before fail-state/registry-base
 test ! -e fail-state/registry-sources
-rm fail-state/registry-base
-mv base-saved fail-state/registry-base
+chmod u+w fail-state/registry-base.new
+rm -r fail-state/registry-base.new
 
 mv fail/user.reg user-saved.reg
 mkdir fail/user.reg
@@ -209,14 +212,74 @@ has fail '"Untouched"="2"'
 grep -Fx '"Untouched"="2"' fail-state/registry-base/user.reg
 test -s fail-state/registry-sources
 
-# A base hive that cannot be read is ignored (the writable hive wins) and
-# recorded anew.
-printf 'garbage\n' > fail-state/registry-base/user.reg
+# A base record that does not match its manifest (truncated to its
+# header, changed, without manifest) fails the merge: taking it for no base
+# would make every value the user's. Removing it lets the writable values
+# win once, and records the base anew.
 sed -i 's/"Untouched"="2"/"Untouched"="kept"/' fail/user.reg
-merge fail "$PWD/layer1" 2> base.log
-grep -F 'ignoring the registry base record' base.log
+cp fail/user.reg user-before.reg
+cp -r fail-state/registry-base base-good
+for damage in truncate change manifest; do
+  rm -rf fail-state/registry-base
+  cp -r base-good fail-state/registry-base
+  chmod -R u+w fail-state/registry-base
+  case "$damage" in
+    truncate) head -n 4 base-good/user.reg > fail-state/registry-base/user.reg ;;
+    change) sed -i 's/"Untouched"="2"/"Untouched"="3"/' fail-state/registry-base/user.reg ;;
+    manifest) rm fail-state/registry-base/manifest ;;
+  esac
+  merge fail "$PWD/layer1" 2> base.log
+  grep -F 'is damaged' base.log
+  grep -F 'merged again on the next launch' base.log
+  cmp user-before.reg fail/user.reg
+  test ! -e fail-state/registry-sources
+done
+rm -rf fail-state/registry-base
+merge fail "$PWD/layer1"
 has fail '"Untouched"="kept"'
 grep -Fx '"Untouched"="1"' fail-state/registry-base/user.reg
+
+# A base made for other layers than the last merge (a launcher without base
+# records merged in between) is used, with a warning.
+printf '%s\n' /nix/store/other-layers > fail-state/registry-sources
+merge fail "$PWD/layer2" 2> base.log
+grep -F 'made for other Nix layers' base.log
+has fail '"Untouched"="kept"'
+has fail '"New"="2"'
+
+# An interrupted merge is completed (or, before its journal, dropped) on
+# the next run, at every step: the result is the same as without the
+# interruption, and nothing is taken for the user's.
+merge ref "$PWD/layer1"
+cp app/user.reg user-edited.reg
+sed -i 's/^"Untouched"="mine now"$/"Untouched"="1"/' user-edited.reg
+cp user-edited.reg ref/user.reg
+merge ref "$PWD/layer2"
+has ref '"Untouched"="2"'
+step=1
+while :; do
+  rm -rf int int-state
+  merge int "$PWD/layer1"
+  cp user-edited.reg int/user.reg
+  NIX_OVERLAYFS_REGISTRY_TEST_INTERRUPT=$step merge int "$PWD/layer2" 2> int.log || true
+  if ! grep -F 'interrupting the registry merge' int.log; then
+    break
+  fi
+  test ! -e int-state/registry-sources
+  merge int "$PWD/layer2" 2> int.log
+  cat int.log
+  for hive in system user userdef; do
+    cmp "ref/$hive.reg" "int/$hive.reg"
+    cmp "ref-state/registry-base/$hive.reg" "int-state/registry-base/$hive.reg"
+  done
+  cmp ref-state/registry-base/manifest int-state/registry-base/manifest
+  cmp ref-state/registry-sources int-state/registry-sources
+  test -z "$(find int int-state -name '.*.nix-overlayfs-*')"
+  test ! -e int-state/registry-base.new -a ! -e int-state/registry-base.old -a ! -e int-state/registry-base.journal
+  step=$((step + 1))
+done
+# (Every step of the commit was tried.)
+test "$step" -gt 8
 
 # Values are compared as Wine sees them: key paths and value names without
 # regard to case, @ as the empty name, data by type and bytes whatever form

@@ -1,4 +1,8 @@
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <iterator>
+#include <sstream>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -739,92 +743,359 @@ int merge_two_way(const fs::path &out_dir, const std::vector<fs::path> &source_d
     return 0;
 }
 
-/* The writable layer WRITABLE_DIR gets each hive merged three-way from
-   the Nix layers LAYER_DIRS (lowest priority first), the base record in
-   BASE_DIR and its own hive; BASE_DIR then gets what the layers gave. */
-int merge_with_base(const fs::path &base_dir, const fs::path &writable_dir,
-                    const std::vector<fs::path> &layer_dirs)
+/* Test hook: NIX_OVERLAYFS_REGISTRY_TEST_INTERRUPT=N ends the program at
+   the Nth step of a commit, as if the launcher had been killed there. */
+void checkpoint()
 {
+    static int step = 0;
+    static const char *interrupt = std::getenv("NIX_OVERLAYFS_REGISTRY_TEST_INTERRUPT");
+    ++step;
+    if (interrupt && std::atoi(interrupt) == step) {
+        std::cerr << "nix-overlayfs: test: interrupting the registry merge at step " << step << '\n';
+        std::_Exit(75);
+    }
+}
+
+/* FNV-1a over a file's bytes, with its size: enough to notice a base
+   record that was truncated or changed. */
+std::optional<std::string> fingerprint(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    uint64_t hash = 0xcbf29ce484222325ull;
+    uint64_t size = 0;
+    char buffer[65536];
+    while (in.read(buffer, sizeof(buffer)) || in.gcount() > 0) {
+        for (std::streamsize i = 0; i < in.gcount(); ++i) {
+            hash ^= static_cast<unsigned char>(buffer[i]);
+            hash *= 0x100000001b3ull;
+        }
+        size += static_cast<uint64_t>(in.gcount());
+    }
+    if (in.bad()) return std::nullopt;
+    char text[64];
+    std::snprintf(text, sizeof(text), "%llu %016llx", static_cast<unsigned long long>(size),
+                  static_cast<unsigned long long>(hash));
+    return std::string(text);
+}
+
+std::optional<std::string> read_file(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return std::nullopt;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (in.bad()) return std::nullopt;
+    return content;
+}
+
+/* Writes CONTENT to PATH through a temporary file next to it. */
+bool replace_file(const fs::path &path, const std::string &content)
+{
+    const fs::path tmp = path.parent_path() / ("." + path.filename().string() + ".nix-overlayfs-tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << content;
+        out.flush();
+        if (!out) {
+            std::cerr << "error: failed to write " << tmp << '\n';
+            std::error_code ec;
+            fs::remove(tmp, ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);
+    if (ec) {
+        std::cerr << "error: failed to replace " << path << ": " << ec.message() << '\n';
+        fs::remove(tmp, ec);
+        return false;
+    }
+    return true;
+}
+
+/* Where a merge with a base record keeps its state. BASE holds the base
+   record: the layers' hives and a manifest naming each hive's size and
+   hash (or that the layers had none) and the Nix layers it was made for.
+   BASE.new is the next base record while it is being written and
+   BASE.old the previous one while it is being replaced; BASE.journal
+   exists from the moment everything is staged until the commit is done. */
+struct State {
+    fs::path writable;
+    fs::path base;
+    fs::path base_new;
+    fs::path base_old;
+    fs::path journal;
+    fs::path signature;
+    fs::path signature_next;
+};
+
+const std::string manifest_header = "nix-overlayfs registry base 1";
+
+fs::path staged_path(const fs::path &dir, const std::string &reg_name)
+{
+    return dir / ("." + reg_name + ".nix-overlayfs-new");
+}
+
+/* Finishes a commit that was interrupted after its journal was written
+   (everything it needs is staged and verified), or drops what an
+   interrupted merge staged before that. */
+bool recover(const State &state)
+{
+    std::error_code ec;
+    if (fs::exists(state.journal, ec)) {
+        const auto journal = read_file(state.journal);
+        if (!journal) {
+            std::cerr << "error: cannot read " << state.journal << '\n';
+            return false;
+        }
+        std::istringstream lines(*journal);
+        std::string word;
+        std::string reg_name;
+        while (lines >> word >> reg_name) {
+            if (word != "hive") continue;
+            const fs::path staged = staged_path(state.writable, reg_name);
+            if (fs::exists(staged, ec)) {
+                fs::rename(staged, state.writable / reg_name, ec);
+                if (ec) {
+                    std::cerr << "error: failed to replace " << state.writable / reg_name << ": " << ec.message() << '\n';
+                    return false;
+                }
+            }
+        }
+        if (fs::exists(state.base_new, ec)) {
+            if (fs::exists(state.base, ec)) {
+                fs::remove_all(state.base_old, ec);
+                fs::rename(state.base, state.base_old, ec);
+                if (ec) {
+                    std::cerr << "error: failed to move " << state.base << " aside: " << ec.message() << '\n';
+                    return false;
+                }
+            }
+            fs::rename(state.base_new, state.base, ec);
+            if (ec) {
+                std::cerr << "error: failed to replace " << state.base << ": " << ec.message() << '\n';
+                return false;
+            }
+        }
+        fs::remove_all(state.base_old, ec);
+        fs::remove(state.journal, ec);
+        if (ec) {
+            std::cerr << "error: failed to remove " << state.journal << ": " << ec.message() << '\n';
+            return false;
+        }
+        std::cerr << "nix-overlayfs: completed an interrupted registry merge of " << state.writable << '\n';
+        return true;
+    }
+
+    for (const auto &reg_name : reg_names) fs::remove(staged_path(state.writable, reg_name), ec);
+    fs::remove_all(state.base_new, ec);
+    if (fs::exists(state.base_old, ec)) {
+        if (fs::exists(state.base, ec)) fs::remove_all(state.base_old, ec);
+        else fs::rename(state.base_old, state.base, ec);
+    }
+    return true;
+}
+
+/* Reads the base record into BASES. No record at all is fine (a writable
+   layer from before base records: the writable hives win). A record that
+   does not match its manifest is an error. */
+bool load_base(const State &state, std::vector<std::optional<Registry>> &bases)
+{
+    std::error_code ec;
+    if (!fs::exists(state.base, ec)) return true;
+
+    auto damaged = [&](const std::string &why) {
+        std::cerr << "error: the registry base record " << state.base << " is damaged (" << why
+                  << "); remove it to merge with the writable values on top\n";
+        return false;
+    };
+
+    if (!fs::is_directory(state.base, ec)) return damaged("not a directory");
+    const auto manifest = read_file(state.base / "manifest");
+    if (!manifest) return damaged("no manifest");
+
+    std::istringstream lines(*manifest);
+    std::string line;
+    if (!std::getline(lines, line) || line != manifest_header) return damaged("unknown manifest");
+    std::map<std::string, std::string> fingerprints;
+    std::string sources;
+    while (std::getline(lines, line)) {
+        if (starts_with(line, "hive ")) {
+            const auto space = line.find(' ', 5);
+            if (space == std::string::npos) return damaged("malformed manifest");
+            fingerprints[line.substr(5, space - 5)] = line.substr(space + 1);
+        } else if (starts_with(line, "source ")) {
+            sources += line.substr(7) + "\n";
+        } else {
+            return damaged("malformed manifest");
+        }
+    }
+
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        const auto found = fingerprints.find(reg_names[i]);
+        if (found == fingerprints.end()) return damaged("the manifest does not name " + reg_names[i]);
+        const fs::path path = state.base / reg_names[i];
+        if (found->second == "absent") {
+            if (fs::exists(path, ec)) return damaged(reg_names[i] + " should not exist");
+            continue;
+        }
+        const auto actual = fingerprint(path);
+        if (!actual) return damaged(reg_names[i] + " is missing");
+        if (*actual != found->second) return damaged(reg_names[i] + " does not match the manifest");
+        std::string error;
+        bases[i] = parse_registry(path, error);
+        if (!bases[i]) return damaged(reg_names[i] + ": " + error);
+    }
+
+    /* A launcher without base records merges without updating them; the
+       base is then older than the writable hives. It is still used: those
+       merges only add the layers' values on top, so nothing is taken for
+       deleted, and values it shares with the layers follow them. */
+    const auto recorded = read_file(state.signature);
+    if (recorded && *recorded != sources) {
+        std::cerr << "warning: the registry base record " << state.base
+                  << " was made for other Nix layers than the last merge; using it\n";
+    }
+    return true;
+}
+
+/* The writable layer gets each hive merged three-way from the Nix layers
+   LAYER_DIRS (lowest priority first), the base record and its own hive;
+   the base record then gets what the layers gave, and SIGNATURE the
+   content of SIGNATURE_NEXT. Everything is read, merged, staged and
+   verified first; the journal then marks the commit, which a later run
+   completes if it is interrupted. SIGNATURE is removed before the commit
+   and written after it, so an interrupted merge is run again. */
+int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
+{
+    if (!recover(state)) return 1;
+
+    std::vector<std::optional<Registry>> bases(reg_names.size());
+    if (!load_base(state, bases)) return 1;
+
+    const auto signature_next = read_file(state.signature_next);
+    if (!signature_next) {
+        std::cerr << "error: cannot read " << state.signature_next << '\n';
+        return 1;
+    }
+
     std::vector<std::optional<Registry>> layers(reg_names.size());
     std::vector<std::optional<Registry>> merged(reg_names.size());
     for (size_t i = 0; i < reg_names.size(); ++i) {
         std::optional<Registry> writable;
         if (!merge_one(reg_names[i], layer_dirs, layers[i])) return 1;
-        if (!load_hive(writable_dir / reg_names[i], writable)) return 1;
+        if (!load_hive(state.writable / reg_names[i], writable)) return 1;
 
-        /* A base hive that cannot be used is dropped: the writable hive
-           then wins, as without a base record, and the base is recorded
-           anew. Without a writable hive there is nothing of the user's to
-           keep, and the base would only delete the layers' values. */
-        std::optional<Registry> base;
-        if (writable && !load_hive(base_dir / reg_names[i], base)) {
-            std::cerr << "warning: ignoring the registry base record " << base_dir / reg_names[i] << '\n';
-            base.reset();
-        }
-
-        merged[i] = merge_three_way(layers[i], base, writable);
+        /* Without a writable hive there is nothing of the user's to keep,
+           and the base would only delete the layers' values. */
+        merged[i] = merge_three_way(layers[i], writable ? bases[i] : std::nullopt, writable);
     }
 
-    if (!make_directory(writable_dir) || !make_directory(base_dir)) return 1;
-    std::vector<fs::path> staged(reg_names.size());
-    std::vector<fs::path> staged_base(reg_names.size());
+    if (!make_directory(state.writable) || !make_directory(state.base.parent_path())) return 1;
     std::error_code ec;
+    std::vector<fs::path> staged(reg_names.size());
     auto discard_staged = [&]() {
-        for (const auto *paths : {&staged, &staged_base}) {
-            for (const auto &path : *paths) {
-                if (!path.empty()) fs::remove(path, ec);
-            }
+        for (const auto &path : staged) {
+            if (!path.empty()) fs::remove(path, ec);
         }
+        fs::remove_all(state.base_new, ec);
     };
-    for (size_t i = 0; i < reg_names.size(); ++i) {
-        if (merged[i]) {
-            staged[i] = stage_registry(writable_dir / reg_names[i], *merged[i]);
-            if (staged[i].empty()) {
-                discard_staged();
-                return 1;
-            }
-        }
-        if (layers[i]) {
-            staged_base[i] = stage_registry(base_dir / reg_names[i], *layers[i]);
-            if (staged_base[i].empty()) {
-                discard_staged();
-                return 1;
-            }
-        }
-    }
 
-    /* Per hive: the old base goes first, then the hive is replaced, then
-       the new base is put in place. Stopping anywhere leaves a hive with
-       the base it was merged with, or with none (the writable hive wins). */
     for (size_t i = 0; i < reg_names.size(); ++i) {
-        const auto base_path = base_dir / reg_names[i];
-        fs::remove(base_path, ec);
-        if (ec) {
-            std::cerr << "error: failed to remove " << base_path << ": " << ec.message() << '\n';
+        if (!merged[i]) continue;
+        staged[i] = stage_registry(state.writable / reg_names[i], *merged[i]);
+        if (staged[i].empty()) {
             discard_staged();
             return 1;
         }
-        if (!staged[i].empty()) {
-            fs::rename(staged[i], writable_dir / reg_names[i], ec);
-            if (ec) {
-                std::cerr << "error: failed to replace " << writable_dir / reg_names[i] << ": " << ec.message() << '\n';
-                discard_staged();
-                return 1;
-            }
-            staged[i].clear();
-        }
-        if (!staged_base[i].empty()) {
-            fs::rename(staged_base[i], base_path, ec);
-            if (ec) {
-                std::cerr << "error: failed to replace " << base_path << ": " << ec.message() << '\n';
-                discard_staged();
-                return 1;
-            }
-            staged_base[i].clear();
-        }
     }
 
-    return 0;
+    fs::remove_all(state.base_new, ec);
+    if (!make_directory(state.base_new)) {
+        discard_staged();
+        return 1;
+    }
+    std::string manifest = manifest_header + "\n";
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        if (!layers[i]) {
+            manifest += "hive " + reg_names[i] + " absent\n";
+            continue;
+        }
+        const fs::path path = state.base_new / reg_names[i];
+        const fs::path written = stage_registry(path, *layers[i]);
+        if (written.empty()) {
+            discard_staged();
+            return 1;
+        }
+        fs::rename(written, path, ec);
+        const auto print = ec ? std::nullopt : fingerprint(path);
+        if (!print) {
+            std::cerr << "error: failed to write " << path << '\n';
+            discard_staged();
+            return 1;
+        }
+        manifest += "hive " + reg_names[i] + " " + *print + "\n";
+    }
+    std::istringstream sources(*signature_next);
+    std::string source;
+    while (std::getline(sources, source)) manifest += "source " + source + "\n";
+    if (!replace_file(state.base_new / "manifest", manifest)) {
+        discard_staged();
+        return 1;
+    }
+
+    /* The commit. */
+    checkpoint();
+    fs::remove(state.signature, ec);
+    if (ec) {
+        std::cerr << "error: failed to remove " << state.signature << ": " << ec.message() << '\n';
+        discard_staged();
+        return 1;
+    }
+    checkpoint();
+    std::string journal;
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        if (!staged[i].empty()) journal += "hive " + reg_names[i] + "\n";
+    }
+    if (!replace_file(state.journal, journal)) {
+        discard_staged();
+        return 1;
+    }
+    checkpoint();
+    for (size_t i = 0; i < reg_names.size(); ++i) {
+        if (staged[i].empty()) continue;
+        fs::rename(staged[i], state.writable / reg_names[i], ec);
+        if (ec) {
+            std::cerr << "error: failed to replace " << state.writable / reg_names[i] << ": " << ec.message() << '\n';
+            return 1;
+        }
+        checkpoint();
+    }
+    if (fs::exists(state.base, ec)) {
+        fs::remove_all(state.base_old, ec);
+        fs::rename(state.base, state.base_old, ec);
+        if (ec) {
+            std::cerr << "error: failed to move " << state.base << " aside: " << ec.message() << '\n';
+            return 1;
+        }
+    }
+    checkpoint();
+    fs::rename(state.base_new, state.base, ec);
+    if (ec) {
+        std::cerr << "error: failed to replace " << state.base << ": " << ec.message() << '\n';
+        return 1;
+    }
+    checkpoint();
+    fs::remove_all(state.base_old, ec);
+    checkpoint();
+    fs::remove(state.journal, ec);
+    if (ec) {
+        std::cerr << "error: failed to remove " << state.journal << ": " << ec.message() << '\n';
+        return 1;
+    }
+    checkpoint();
+
+    return replace_file(state.signature, *signature_next) ? 0 : 1;
 }
 
 } // namespace
@@ -833,15 +1104,24 @@ int main(int argc, char **argv)
 {
     const std::string usage =
         "usage: merge-wine-registries OUT_DIR SOURCE_DIR...\n"
-        "       merge-wine-registries --base BASE_DIR WRITABLE_DIR [LAYER_DIR...]\n";
+        "       merge-wine-registries --base BASE_DIR --signature SIGNATURE --signature-next SIGNATURE_NEXT\n"
+        "                             WRITABLE_DIR [LAYER_DIR...]\n";
 
     if (argc >= 2 && std::string_view(argv[1]) == "--base") {
-        if (argc < 4) {
+        if (argc < 8 || std::string_view(argv[3]) != "--signature" || std::string_view(argv[5]) != "--signature-next") {
             std::cerr << usage;
             return 2;
         }
-        std::vector<fs::path> layer_dirs(argv + 4, argv + argc);
-        return merge_with_base(argv[2], argv[3], layer_dirs);
+        State state;
+        state.base = argv[2];
+        state.signature = argv[4];
+        state.signature_next = argv[6];
+        state.writable = argv[7];
+        state.base_new = state.base.string() + ".new";
+        state.base_old = state.base.string() + ".old";
+        state.journal = state.base.string() + ".journal";
+        std::vector<fs::path> layer_dirs(argv + 8, argv + argc);
+        return merge_with_base(state, layer_dirs);
     }
 
     if (argc < 3) {

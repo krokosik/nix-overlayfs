@@ -247,20 +247,30 @@ is removed unless the user created it. A key the user deleted comes back if a
 layer adds a new value to it. A hive missing from the writable layer is taken
 from the layers as it is.
 
-A writable layer from before the base record (or one whose base hive cannot be
-read) is merged as before, with the writable values on top, and gets a base
-record. Values it shares with the layers then follow the next layer change;
-values that differ stay the user's.
+A writable layer from before the base record is merged as before, with the
+writable values on top, and gets a base record. Values it shares with the
+layers then follow the next layer change; values that differ stay the user's.
+
+The base record has a `manifest` naming the size and hash of each of its hives
+(or that the layers had none) and the Nix layers it was made for. A record
+that does not match its manifest (truncated, changed, or without manifest) fails
+the merge: taking it for no record would make every packaged value the user's.
+Delete `.nix-overlayfs/registry-base` to merge once with the writable values on
+top and record it anew. A record made for other layers than the last merge (a
+launcher without base records merged in between) is used, with a warning: such
+a merge only adds the layers' values on top, so nothing is taken for deleted.
 
 A hive that cannot be read or parsed fails the merge before anything is
-written. Each hive is staged and read back before it replaces the original;
-the old base hive is removed before its writable hive is replaced and the new
-one put in place after, so every hive keeps the base it was merged with, or
-none. The layer signature (`.nix-overlayfs/registry-sources`) is recorded
-last. A failed merge keeps the old base, removes the signature and lets the
-launch go on; the next launch merges again. Delete
-`.nix-overlayfs/registry-sources` to merge on the next launch anyway, and
-`.nix-overlayfs/registry-base` to let the writable values win once more.
+written. Every new hive and the new base record
+(`.nix-overlayfs/registry-base.new`) are staged and read back first. The commit
+then removes the layer signature (`.nix-overlayfs/registry-sources`), writes a
+journal (`registry-base.journal`), moves the hives and the base record into
+place, removes the journal and writes the signature last. A merge interrupted
+before the journal exists leaves the old hives and base, and the next launch
+drops what was staged; one interrupted after it is completed by the next
+launch, before it merges. A failed merge keeps the old base, has no
+signature and lets the launch go on; the next launch merges again. Delete
+`.nix-overlayfs/registry-sources` to merge on the next launch anyway.
 
 Package settings belong in a layer (a `mkFileLayer`'s
 `registryDllOverrides`, or a layer whose build writes the registry). Do not
