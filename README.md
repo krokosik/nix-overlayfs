@@ -317,11 +317,15 @@ written. Every new hive and the new base record
 (`.nix-overlayfs/registry-base.new`) are staged and read back first. The commit
 then removes the layer signature (`.nix-overlayfs/registry-sources`), writes a
 journal (`registry-base.journal`), moves the hives and the base record into
-place, removes the journal and writes the signature last. A merge interrupted
-before the journal exists leaves the old hives and base, and the next launch
-drops what was staged; one interrupted after it is completed by the next
-launch, before it merges. A failed merge keeps the old base, has no
-signature and lets the launch go on; the next launch merges again. Delete
+place, removes the journal and writes the signature last. A merge stopped
+before the journal exists leaves the old hives and base, and what it staged
+is dropped; one stopped after it is completed, before anything else. Both
+happen right after a failed merge, in the same launch, and again at the
+start of the next merge (for a launcher that was killed). A launch never
+starts Wine while a journal is left: Wine would save to hives that
+completing the merge then replaces. If the merge cannot be completed, the
+launch stops with an error. Otherwise a failed merge keeps the old base, has
+no signature and lets the launch go on; the next launch merges again. Delete
 `.nix-overlayfs/registry-sources` to merge on the next launch anyway.
 
 Layers hold only their own changes (see [Registry of a layer](#registry-of-a-layer)),

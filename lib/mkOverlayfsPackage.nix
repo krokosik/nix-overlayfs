@@ -596,7 +596,7 @@ stdenv.mkDerivation {
           ${registry} merge --launcher-layer ${integrationLayer} ${
             lib.optionalString (registryCaseTable != null) "--case-table ${registryCaseTable}"
           } "$appdir" "$nix_overlayfs_registry_signature" \
-            "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}"
+            "$nix_overlayfs_registry_signature_next" "''${nix_overlayfs_registry_sources[@]}" || exit 1
 
           nix_overlayfs_prepare_upperdir_skeleton() {
             local -a nix_overlayfs_lowerdirs=()

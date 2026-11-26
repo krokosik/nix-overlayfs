@@ -318,6 +318,45 @@ done
 # (Every step of the commit was tried.)
 test "$step" -gt 8
 
+# The launch goes on after a merge stopped in the middle only once that
+# merge is completed: Wine's saves after it are not replaced by the next
+# launch's recovery. (Each step: stopped, then the application saves a
+# value, then the next launch.)
+step=1
+while :; do
+  rm -rf save save-state
+  merge save "$PWD/layer1"
+  cp user-edited.reg save/user.reg
+  NIX_OVERLAYFS_REGISTRY_TEST_INTERRUPT=$step merge save "$PWD/layer2" 2> save.log
+  if ! grep -F 'interrupting the registry merge' save.log; then
+    break
+  fi
+  test ! -e save-state/registry-base.journal
+  test -z "$(find save -name '.*.nix-overlayfs-*')"
+  sed -i 's/^"Changed"=.*/"Changed"="saved-after-failed-merge"/' save/user.reg
+  merge save "$PWD/layer2"
+  has save '"Changed"="saved-after-failed-merge"'
+  step=$((step + 1))
+done
+test "$step" -gt 8
+
+# If the stopped merge cannot be completed, the launch must not go on.
+merge abort "$PWD/layer1"
+printf '%s\n' "$PWD/layer2" > tmp/abort-next
+NIX_OVERLAYFS_REGISTRY_TEST_INTERRUPT=3 merge-wine-registries --base "$PWD/abort-state/registry-base" \
+  --signature abort-state/registry-sources --signature-next tmp/abort-next "$PWD/abort" "$PWD/layer2" || true
+test -e abort-state/registry-base.journal
+cp abort/user.reg abort-before.reg
+chmod a-w abort
+! merge abort "$PWD/layer2" 2> abort.log
+cat abort.log
+grep -F 'cannot be completed' abort.log
+chmod u+w abort
+cmp abort-before.reg abort/user.reg
+merge abort "$PWD/layer2"
+test ! -e abort-state/registry-base.journal
+has abort '"Untouched"="2"'
+
 # Values are compared as Wine sees them: key paths and value names without
 # regard to case, @ as the empty name, data by type and bytes whatever form
 # it is written in. A type change is a change.

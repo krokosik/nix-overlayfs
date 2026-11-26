@@ -19,7 +19,10 @@
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
 # differ from SIGNATURE (the last successful merge) or a registry file is
 # missing. A failed merge removes SIGNATURE, so the next call merges again;
-# it still exits 0, so the launch goes on.
+# it still exits 0, so the launch goes on. The exception is a merge stopped
+# in the middle of replacing the hives (its journal is left): that is
+# completed first, and if it cannot be, merge exits 1, and the launch must
+# not go on, since Wine would write over hives the next launch replaces.
 #
 # upsert-section: replaces the key SECTION of the Wine registry file REGISTRY
 # (for example Software\\Wine\\WineBrowser, with doubled backslashes as in the
@@ -82,6 +85,15 @@ merge() {
     --signature-next "$signature_next" "${launcher_layer[@]}" "$appdir" "${layers[@]}"; then
     echo "warning: nix-overlayfs: merging the registry of $appdir failed; it is merged again on the next launch" >&2
     rm -f "$signature"
+    # A merge stopped after its journal (killed, or a step failed) replaces
+    # the writable hives with its staged ones when it is completed, so it is
+    # completed now, before Wine writes to them; one stopped before leaves
+    # staged files, which are removed.
+    merge-wine-registries --recover "$base" "$appdir" || true
+    if [ -e "$base.journal" ]; then
+      echo "error: nix-overlayfs: an interrupted registry merge of $appdir cannot be completed (see above); not starting, since Wine would write over registry files it still has to replace" >&2
+      return 1
+    fi
   fi
 }
 

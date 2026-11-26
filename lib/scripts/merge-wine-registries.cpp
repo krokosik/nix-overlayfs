@@ -1263,12 +1263,27 @@ int main(int argc, char **argv)
     const std::string usage =
         "usage: merge-wine-registries [--case-table L_INTL_NLS] OUT_DIR SOURCE_DIR...\n"
         "       merge-wine-registries [--case-table L_INTL_NLS] --base BASE_DIR --signature SIGNATURE\n"
-        "                             --signature-next SIGNATURE_NEXT [--launcher-layer DIR] WRITABLE_DIR [LAYER_DIR...]\n";
+        "                             --signature-next SIGNATURE_NEXT [--launcher-layer DIR] WRITABLE_DIR [LAYER_DIR...]\n"
+        "       merge-wine-registries --recover BASE_DIR WRITABLE_DIR\n";
 
     std::vector<std::string> args(argv + 1, argv + argc);
     if (args.size() >= 2 && args[0] == "--case-table") {
         if (!load_case_table(args[1])) return 1;
         args.erase(args.begin(), args.begin() + 2);
+    }
+
+    if (!args.empty() && args[0] == "--recover") {
+        if (args.size() != 3) {
+            std::cerr << usage;
+            return 2;
+        }
+        State state;
+        state.base = args[1];
+        state.writable = args[2];
+        state.base_new = state.base.string() + ".new";
+        state.base_old = state.base.string() + ".old";
+        state.journal = state.base.string() + ".journal";
+        return recover(state) ? 0 : 1;
     }
 
     if (!args.empty() && args[0] == "--base") {
