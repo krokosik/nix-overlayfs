@@ -1,5 +1,5 @@
 # Usage:
-#   nix-overlayfs-registry merge APPDIR SIGNATURE SIGNATURE_NEXT SOURCE...
+#   nix-overlayfs-registry merge [--launcher-layer DIR] APPDIR SIGNATURE SIGNATURE_NEXT SOURCE...
 #   nix-overlayfs-registry upsert-section REGISTRY SECTION TMPDIR < BODY
 #   nix-overlayfs-registry string VALUE
 #
@@ -10,7 +10,10 @@
 # keeps what the layers gave at the last successful merge, so a value the
 # user left as it was follows the layers, and one the user changed, added or
 # deleted stays as the user left it (see merge-wine-registries); a base
-# record that does not match its manifest fails the merge. Writes the
+# record that does not match its manifest fails the merge. DIR, one of the
+# SOURCEs, is the launcher's integration layer: on a merge without a base
+# record, the keys it has are taken from the layers, not from APPDIR, where
+# launchers before it wrote them at every launch. Writes the
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
 # differ from SIGNATURE (the last successful merge) or a registry file is
 # missing. A failed merge removes SIGNATURE, so the next call merges again;
@@ -24,11 +27,16 @@
 # string: prints VALUE as a quoted registry string value.
 
 usage() {
-  echo "usage: nix-overlayfs-registry merge APPDIR SIGNATURE SIGNATURE_NEXT SOURCE... | upsert-section REGISTRY SECTION TMPDIR | string VALUE" >&2
+  echo "usage: nix-overlayfs-registry merge [--launcher-layer DIR] APPDIR SIGNATURE SIGNATURE_NEXT SOURCE... | upsert-section REGISTRY SECTION TMPDIR | string VALUE" >&2
   exit 2
 }
 
 merge() {
+  local -a launcher_layer=()
+  if [ "$1" = --launcher-layer ]; then
+    launcher_layer=(--launcher-layer "$2")
+    shift 2
+  fi
   local appdir="$1"
   local signature="$2"
   local signature_next="$3"
@@ -63,7 +71,7 @@ merge() {
   # merge-wine-registries also completes a merge that was interrupted,
   # replaces the base record and records the signature last.
   if ! merge-wine-registries --base "$base" --signature "$signature" \
-    --signature-next "$signature_next" "$appdir" "${layers[@]}"; then
+    --signature-next "$signature_next" "${launcher_layer[@]}" "$appdir" "${layers[@]}"; then
     echo "warning: nix-overlayfs: merging the registry of $appdir failed; it is merged again on the next launch" >&2
     rm -f "$signature"
   fi
@@ -108,6 +116,9 @@ registry_string() {
 case "${1:-}" in
   merge)
     [ "$#" -ge 4 ] || usage
+    if [ "$2" = --launcher-layer ]; then
+      [ "$#" -ge 6 ] || usage
+    fi
     shift
     merge "$@"
     ;;

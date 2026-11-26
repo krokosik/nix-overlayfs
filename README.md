@@ -200,16 +200,52 @@ Wine updates a prefix (wineboot's `PreInstall`, `DefaultInstall` and
 `Wow64Install`) when `.update-timestamp` is missing or does not match its
 `wine.inf`. In a layered prefix that update rewrites every builtin DLL into the
 writable layer, where the copies then hide the Nix layers for good, including
-native DLLs such as DXVK's `d3d11.dll`. Before mounting, the launcher therefore
-writes `disable` into the writable layer's `.update-timestamp`, which stops
-wineboot's automatic update (`programs/wineboot/wineboot.c`,
+native DLLs such as DXVK's `d3d11.dll`. The launcher's
+[integration layer](#integration-layer) therefore has a `.update-timestamp`
+that says `disable`, which stops wineboot's automatic update (`programs/wineboot/wineboot.c`,
 `update_timestamp()`). It does not stop an explicit `wineboot -u` or a program
 that runs `wine.inf`'s sections itself. Prefix contents come from the Nix
 layers; a Wine change that needs new prefix contents belongs in a rebuilt
 base environment.
 
-Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore Wine's default behaviour
-for a launch; the launcher then removes its marker again.
+Before mounting, the launcher removes a `.update-timestamp` from the writable
+layer, where it would hide the marker (launchers before the integration layer
+wrote the marker there). Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore
+Wine's default behaviour for a launch: the writable layer then gets the
+timestamp of the highest Nix layer without the marker (an empty one if none
+has a timestamp), and the next launch without the variable removes it again.
+
+### Integration layer
+
+What the launcher itself puts into the prefix comes from a small layer
+generated with the launcher (`passthru.integrationLayer`), mounted above the
+package's layers and merged into the registry with them, so the writable
+layer holds only what the application and the user write:
+
+- `.update-timestamp` with `disable` (see above);
+- with host integration, the `start.exe` shim in `system32` and `syswow64`;
+- with host integration in a Wine package, a `user.reg` with the host URL
+  opener (`HKCU\Software\Wine\WineBrowser`) and the package's declared
+  `urlSchemes` (`HKCU\Software\Classes\<scheme>`, opening `executablePath`,
+  when that lies below `drive_c`).
+
+The layer changes with the launcher only, so a rebuilt launcher (another
+opener store path, another scheme) reaches existing users through the
+[registry merge](#registry). Its `user.reg` has only these keys, so it masks
+no other layer's values. On the first merge without a base record, the values
+these keys have in the writable layer (launchers before wrote them there at
+every launch) are taken as unchanged, so the layer's win. Copies of the shim
+that earlier launchers left in the writable layer are removed before mounting.
+
+What a launch still writes into the writable layer: the merged registry
+itself (Wine needs complete hives; the values that came from the layers
+follow them, see [Registry](#registry)), and the registry entries of URL
+schemes that only `urlSchemeDiscoveryCommands` finds at launch, or of all
+schemes when `executablePath` is not below `drive_c` (its Windows path
+depends on the session's mount point). Hooks that call
+`nix_overlayfs_upsert_user_reg_section` write there too;
+`nix_overlayfs_configure_host_browser` and `nix_overlayfs_remove_start_shim`
+are kept for hooks but do nothing now.
 
 ### Registry
 
@@ -329,10 +365,12 @@ by hand once no session of that application runs.
 ## URL schemes
 
 A package's `urlSchemes` (plus anything `urlSchemeDiscoveryCommands` prints)
-are registered in two places at every launch:
+are registered in two places:
 
 - in the Wine prefix (`HKCU\Software\Classes\<scheme>`), so Windows programs
-  can open them;
+  can open them: declared schemes by the
+  [integration layer](#integration-layer), schemes found at launch by the
+  launch;
 - on the host, unless `registerHostUrlHandlers = false`: a hidden
   `<executableName>-nix-overlayfs-url-handler.desktop` in
   `$XDG_DATA_HOME/applications`, made the user's default with `xdg-mime`.
@@ -926,8 +964,8 @@ standalone programs in `lib/runtime/`, built with `writeShellApplication` so
   host browser;
 - `nix-overlayfs-registry`: merges the layers' registry files with the
   writable layer's (see [Registry](#registry)), replaces keys of `user.reg`;
-- `nix-overlayfs-upper-layer`: the writable layer's directory skeleton and the
-  `start.exe` shim;
+- `nix-overlayfs-upper-layer`: the writable layer's directory skeleton, and
+  removing `start.exe` shims that earlier launchers left there;
 - `nix-overlayfs-guard-prefix-updates` and `nix-overlayfs-check-shadowed`:
   see [Persistent runtime state](#persistent-runtime-state);
 - `nix-overlayfs-namespace`: the namespace mode, hiding `/etc/ld.so.preload`,

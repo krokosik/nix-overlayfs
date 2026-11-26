@@ -1,4 +1,4 @@
-# Usage: nix-overlayfs-guard-prefix-updates APPDIR
+# Usage: nix-overlayfs-guard-prefix-updates APPDIR [LOWERDIR...]
 #
 # Wine runs a full prefix update (wineboot: PreInstall, DefaultInstall and
 # Wow64Install from wine.inf) when the prefix's .update-timestamp is missing or
@@ -12,32 +12,51 @@
 # not stop an explicit `wineboot -u`/`--update` (update_wineprefix() is forced
 # then) or a program that runs wine.inf's sections itself.
 #
-# NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 restores Wine's default behaviour by
-# removing the marker again, so the timestamp of the Nix layers applies.
+# The launcher's integration layer, the highest of the LOWERDIRs (highest
+# priority first), has a .update-timestamp that says "disable". The writable
+# layer APPDIR must not hide it: a .update-timestamp there (the marker
+# launchers wrote before the integration layer existed, or the timestamp of
+# an update Wine ran while updates were allowed) is removed.
+#
+# NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 restores Wine's default behaviour: APPDIR
+# gets the timestamp of the highest LOWERDIR whose file does not start with
+# "disable" (or an empty file, which Wine takes like a missing timestamp),
+# unless it has a timestamp of its own already.
 
-if [ "$#" -ne 1 ]; then
-  echo "usage: nix-overlayfs-guard-prefix-updates APPDIR" >&2
+if [ "$#" -lt 1 ]; then
+  echo "usage: nix-overlayfs-guard-prefix-updates APPDIR [LOWERDIR...]" >&2
   exit 2
 fi
 
 appdir="$1"
+shift
 timestamp="$appdir/.update-timestamp"
-current=""
-if [ -f "$timestamp" ]; then
-  current="$(head -c 7 -- "$timestamp")"
+
+starts_with_disable() {
+  [ "$(head -c 7 -- "$1" 2>/dev/null)" = disable ]
+}
+
+if [ "${NIX_OVERLAYFS_WINE_PREFIX_UPDATES:-0}" != 1 ]; then
+  rm -f -- "$timestamp"
+  exit 0
 fi
 
-if [ "${NIX_OVERLAYFS_WINE_PREFIX_UPDATES:-0}" = 1 ]; then
-  if [ "$current" = disable ]; then
-    rm -f -- "$timestamp"
+if [ -f "$timestamp" ] && ! starts_with_disable "$timestamp"; then
+  exit 0
+fi
+
+source_timestamp=""
+for lowerdir in "$@"; do
+  if [ -f "$lowerdir/.update-timestamp" ] && ! starts_with_disable "$lowerdir/.update-timestamp"; then
+    source_timestamp="$lowerdir/.update-timestamp"
+    break
   fi
-  exit 0
-fi
-
-if [ "$current" = disable ]; then
-  exit 0
-fi
+done
 
 mkdir -p -- "$appdir"
-printf 'disable\n' > "$timestamp.tmp.$$"
+if [ -n "$source_timestamp" ]; then
+  cat -- "$source_timestamp" > "$timestamp.tmp.$$"
+else
+  : > "$timestamp.tmp.$$"
+fi
 mv -f -- "$timestamp.tmp.$$" "$timestamp"

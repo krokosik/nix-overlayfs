@@ -117,11 +117,6 @@ let
     overlayRoot = "$tempdir/overlay";
     homeDir = "$HOME";
   };
-  hostBrowserBootstrapCommands = lib.optionalString hostIntegration ''
-        nix_overlayfs_upsert_user_reg_section 'Software\\Wine\\WineBrowser' <<EOF
-    "Browsers"=$(nix_overlayfs_registry_string '${lib.getExe overlayfsLib.hostUrlOpener}')
-    EOF
-  '';
   protocolRegistrationCommands = lib.optionalString hostIntegration ''
         if [ -s "$nix_overlayfs_url_schemes_file" ]; then
           nix_overlayfs_protocol_executable=${lib.escapeShellArg executablePath}
@@ -139,6 +134,10 @@ let
               ;;
           esac
           while IFS= read -r nix_overlayfs_url_scheme; do
+            # Declared schemes come from the launcher's integration layer.
+            case "$nix_overlayfs_registry_url_schemes" in
+              *" $nix_overlayfs_url_scheme "*) continue ;;
+            esac
             nix_overlayfs_upsert_user_reg_section 'Software\\Classes\\'"$nix_overlayfs_url_scheme" <<EOF
     @=$(nix_overlayfs_registry_string "URL:$nix_overlayfs_url_scheme Protocol")
     "URL Protocol"=""
@@ -511,9 +510,10 @@ mkOverlayfsPackage {
     urlSchemeDiscoveryCommands
     urlSchemeOpenCommands
     ;
-  extraPreLaunchCommands = hostBrowserBootstrapCommands + extraPreLaunchCommands;
+  inherit extraPreLaunchCommands;
   inherit extraPostLaunchCommands;
   urlSchemeRegistryCommands = protocolRegistrationCommands;
+  registerUrlSchemesInRegistry = true;
   overlayDependencies = overlayDependenciesPlusEnv;
   session = launchSession;
   launchProgram = launchSession.commands.wine;

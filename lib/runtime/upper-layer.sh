@@ -1,28 +1,26 @@
 # Usage:
 #   nix-overlayfs-upper-layer skeleton APPDIR LOWERDIR...
-#   nix-overlayfs-upper-layer install-start-shim APPDIR SHIM
-#   nix-overlayfs-upper-layer remove-start-shim APPDIR OVERLAY SHIM
+#   nix-overlayfs-upper-layer clean-start-shim APPDIR SHIM
 #
-# Prepares the writable layer APPDIR before the prefix is mounted, and
-# cleans up after it.
+# Prepares the writable layer APPDIR before the prefix is mounted.
 #
 # skeleton: creates the directories of the Nix layers' drive_c (five levels
 # deep) in APPDIR, writable by everyone. Wine and installers create files in
 # them; a directory that exists only in a read-only lower layer would first
 # have to be copied up.
 #
-# install-start-shim: puts the start.exe of SHIM (the hostStartShim package:
-# bin/x86_64/start.exe and bin/i686/start.exe) into APPDIR's system32 and
-# syswow64, so "start <url>" opens the host browser.
-#
-# remove-start-shim: removes those copies again, from APPDIR and, where they
-# are still the shim's, from the mounted prefix OVERLAY.
+# clean-start-shim: the start.exe shim of SHIM (the hostStartShim package:
+# bin/x86_64/start.exe and bin/i686/start.exe), with which "start <url>"
+# opens the host browser, comes from the launcher's integration layer.
+# Launchers before it copied the shim into APPDIR's system32 and syswow64 for
+# each session; a copy left there (a session that was killed) is removed, so
+# it does not hide the layer's. Other files are left alone.
 #
 # A step that fails is reported and the others still run, as they did when
 # this was part of the launcher.
 
 usage() {
-  echo "usage: nix-overlayfs-upper-layer skeleton APPDIR LOWERDIR... | install-start-shim APPDIR SHIM | remove-start-shim APPDIR OVERLAY SHIM" >&2
+  echo "usage: nix-overlayfs-upper-layer skeleton APPDIR LOWERDIR... | clean-start-shim APPDIR SHIM" >&2
   exit 2
 }
 
@@ -47,37 +45,17 @@ skeleton() {
   done
 }
 
-install_start_shim() {
+clean_start_shim() {
   local appdir="$1"
   local shim="$2"
+  local copy=""
 
-  rm -f \
-    "$appdir/drive_c/windows/system32/start.exe" \
-    "$appdir/drive_c/windows/syswow64/start.exe" || true
-  mkdir -p \
-    "$appdir/drive_c/windows/system32" \
-    "$appdir/drive_c/windows/syswow64" || true
-  cp -f "$shim/bin/x86_64/start.exe" "$appdir/drive_c/windows/system32/start.exe" || true
-  cp -f "$shim/bin/i686/start.exe" "$appdir/drive_c/windows/syswow64/start.exe" || true
-}
-
-remove_start_shim() {
-  local appdir="$1"
-  local overlay="$2"
-  local shim="$3"
-
-  rm -f \
-    "$appdir/drive_c/windows/system32/start.exe" \
-    "$appdir/drive_c/windows/syswow64/start.exe" || true
-
-  if [ -f "$overlay/drive_c/windows/system32/start.exe" ] \
-    && cmp -s "$overlay/drive_c/windows/system32/start.exe" "$shim/bin/x86_64/start.exe"; then
-    rm -f "$overlay/drive_c/windows/system32/start.exe" || true
-  fi
-  if [ -f "$overlay/drive_c/windows/syswow64/start.exe" ] \
-    && cmp -s "$overlay/drive_c/windows/syswow64/start.exe" "$shim/bin/i686/start.exe"; then
-    rm -f "$overlay/drive_c/windows/syswow64/start.exe" || true
-  fi
+  for copy in system32:x86_64 syswow64:i686; do
+    if [ -f "$appdir/drive_c/windows/${copy%%:*}/start.exe" ] \
+      && cmp -s "$appdir/drive_c/windows/${copy%%:*}/start.exe" "$shim/bin/${copy#*:}/start.exe"; then
+      rm -f "$appdir/drive_c/windows/${copy%%:*}/start.exe" || true
+    fi
+  done
 }
 
 case "${1:-}" in
@@ -86,13 +64,9 @@ case "${1:-}" in
     shift
     skeleton "$@"
     ;;
-  install-start-shim)
+  clean-start-shim)
     [ "$#" -eq 3 ] || usage
-    install_start_shim "$2" "$3"
-    ;;
-  remove-start-shim)
-    [ "$#" -eq 4 ] || usage
-    remove_start_shim "$2" "$3" "$4"
+    clean_start_shim "$2" "$3"
     ;;
   *)
     usage

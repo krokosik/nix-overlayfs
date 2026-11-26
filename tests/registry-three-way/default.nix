@@ -384,5 +384,44 @@ merge del "$PWD/dlow" "$PWD/dhigh" 2> del.log
 grep -F 'which only layers may have' del.log
 cmp del-bad.reg del/user.reg
 
+# The launcher's integration layer: on a merge without a base record, the
+# keys it has come from the layers, not from the writable hive, where
+# launchers before it wrote them (with a store path that may be gone).
+layer lbase <<'EOF'
+[Software\\Wine\\WineBrowser]
+"Browsers"="layer opener"
+EOF
+hive integration user 'User\\S-1-5-21-0-0-0-1000' <<'EOF'
+[Software\\Wine\\WineBrowser]
+"Browsers"="/nix/store/new-opener"
+
+[Software\\Classes\\probe]
+@="URL:probe Protocol"
+"URL Protocol"=""
+EOF
+hive launched user 'User\\S-1-5-21-0-0-0-1000' <<'EOF'
+[Software\\Wine\\WineBrowser] 1700000000
+"Browsers"="/nix/store/old-opener"
+
+[Software\\Classes\\probe] 1700000000
+@="URL:probe Protocol"
+"URL Protocol"=""
+"Mine"="kept"
+
+[Software\\Other] 1700000000
+"Mine"="kept"
+EOF
+${registry} merge --launcher-layer "$PWD/integration" "$PWD/launched" launched-state/registry-sources \
+  tmp/registry-sources "$PWD/lbase" "$PWD/integration" "$PWD/launched"
+has launched '"Browsers"="/nix/store/new-opener"'
+has launched '"Mine"="kept"'
+test "$(grep -c '"Mine"="kept"' launched/user.reg)" -eq 2
+# With the base recorded, the integration layer's values follow it.
+sed -i 's|new-opener|newer-opener|' integration/user.reg
+rm launched-state/registry-sources
+${registry} merge --launcher-layer "$PWD/integration" "$PWD/launched" launched-state/registry-sources \
+  tmp/registry-sources "$PWD/lbase" "$PWD/integration" "$PWD/launched"
+has launched '"Browsers"="/nix/store/newer-opener"'
+
 touch "$out"
 ''

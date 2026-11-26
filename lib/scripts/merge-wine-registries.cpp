@@ -865,6 +865,8 @@ struct State {
     fs::path journal;
     fs::path signature;
     fs::path signature_next;
+    /* The launcher's integration layer, one of the layers, or empty. */
+    fs::path launcher_layer;
 };
 
 const std::string manifest_header = "nix-overlayfs registry base 1";
@@ -1029,6 +1031,32 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
             return 1;
         }
 
+        /* Launchers before the integration layer wrote its keys into the
+           writable hive at every launch. Without a base record they would
+           win and stay; taking the values it has as unchanged gives them to
+           the layers. */
+        if (writable && !bases[i] && !state.launcher_layer.empty()) {
+            std::optional<Registry> launcher;
+            if (!load_hive(state.launcher_layer / reg_names[i], launcher)) return 1;
+            if (launcher) {
+                Registry assumed;
+                assumed.version = writable->version;
+                assumed.location = writable->location;
+                assumed.arch = writable->arch;
+                for (const auto &[id, key] : launcher->keys) {
+                    const auto found = writable->keys.find(id);
+                    if (found == writable->keys.end()) continue;
+                    Key &assumed_key = assumed.keys[id];
+                    assumed_key.path = found->second.path;
+                    for (const auto &value : key.values) {
+                        const auto written = found->second.values.find(value.first);
+                        if (written != found->second.values.end()) assumed_key.values.insert(*written);
+                    }
+                }
+                bases[i] = std::move(assumed);
+            }
+        }
+
         /* Without a writable hive there is nothing of the user's to keep,
            and the base would only delete the layers' values. */
         merged[i] = merge_three_way(layers[i], writable ? bases[i] : std::nullopt, writable);
@@ -1148,7 +1176,7 @@ int main(int argc, char **argv)
     const std::string usage =
         "usage: merge-wine-registries OUT_DIR SOURCE_DIR...\n"
         "       merge-wine-registries --base BASE_DIR --signature SIGNATURE --signature-next SIGNATURE_NEXT\n"
-        "                             WRITABLE_DIR [LAYER_DIR...]\n";
+        "                             [--launcher-layer DIR] WRITABLE_DIR [LAYER_DIR...]\n";
 
     if (argc >= 2 && std::string_view(argv[1]) == "--base") {
         if (argc < 8 || std::string_view(argv[3]) != "--signature" || std::string_view(argv[5]) != "--signature-next") {
@@ -1159,11 +1187,20 @@ int main(int argc, char **argv)
         state.base = argv[2];
         state.signature = argv[4];
         state.signature_next = argv[6];
-        state.writable = argv[7];
+        int next = 7;
+        if (std::string_view(argv[next]) == "--launcher-layer") {
+            if (argc < 10) {
+                std::cerr << usage;
+                return 2;
+            }
+            state.launcher_layer = argv[next + 1];
+            next += 2;
+        }
+        state.writable = argv[next];
         state.base_new = state.base.string() + ".new";
         state.base_old = state.base.string() + ".old";
         state.journal = state.base.string() + ".journal";
-        std::vector<fs::path> layer_dirs(argv + 8, argv + argc);
+        std::vector<fs::path> layer_dirs(argv + next + 1, argv + argc);
         return merge_with_base(state, layer_dirs);
     }
 

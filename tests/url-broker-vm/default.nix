@@ -243,6 +243,10 @@ else
           "{ echo COLD_START_LOG; cat /tmp/nix-overlayfs-cold-start.log || true; false; }"
       )
 
+      # The supervisor keeps the session lock until the prefix is unmounted,
+      # a moment after the session's process exits.
+      machine.succeed("timeout 60 bash -c 'until flock -n /home/alice/.local/share/url-broker-vm/.nix-overlayfs/session.lock true; do sleep 0.25; done'")
+
       # Forward only, without a session: status 3 and nothing starts.
       status = machine.execute("su - alice -c 'export XDG_DATA_HOME=$HOME/.local/share XDG_CONFIG_HOME=$HOME/.config XDG_CACHE_HOME=$HOME/.cache NIX_OVERLAYFS_NAMESPACE_MODE=direct; timeout 30 ${probePackage}/bin/url-broker-vm --nix-overlayfs-forward-url probe://forwarded?state=nobody'")[0]
       assert status == 3, f"forwarding without a session exited with {status}, expected 3"
@@ -285,6 +289,22 @@ else
       machine.succeed("awk 'index($0, \"Classes\") && index($0, \"probe]\") && substr($0, 1, 1) == \"[\" { count++ } END { exit count != 1 }' /home/alice/.local/share/url-broker-vm/user.reg")
       machine.succeed("awk 'substr($0, 1, 1) == \"[\" && index($0, \"Classes\") && index($0, \"probe\") && index($0, \"shell\") && index($0, \"open\") && index($0, \"command\") { found = 1 } END { exit !found }' /home/alice/.local/share/url-broker-vm/user.reg")
       machine.succeed("! grep -F '[SoftwareClassesprobe]' /home/alice/.local/share/url-broker-vm/user.reg")
+      # Those keys, the start.exe shim and the prefix-update marker come from
+      # the launcher's integration layer: the launch writes none of them into
+      # the writable layer. The registry keys there are the layers' (the same
+      # as in the base record), so they follow the layers.
+      upper = "/home/alice/.local/share/url-broker-vm"
+      machine.succeed(f"test ! -e {upper}/.update-timestamp")
+      machine.succeed(f"test ! -e {upper}/drive_c/windows/system32/start.exe")
+      machine.succeed(f"test ! -e {upper}/drive_c/windows/syswow64/start.exe")
+      for name in ["Browsers", "URL Protocol"]:
+          machine.succeed(
+              f"grep -F '\"{name}\"=' {upper}/user.reg > /tmp/writable-{name[0]}; "
+              f"grep -F '\"{name}\"=' {upper}/.nix-overlayfs/registry-base/user.reg > /tmp/base-{name[0]}; "
+              f"test -s /tmp/base-{name[0]} && cmp /tmp/writable-{name[0]} /tmp/base-{name[0]}"
+          )
+      machine.succeed(f"grep -F 'probe' {upper}/.nix-overlayfs/registry-base/user.reg")
+      machine.succeed("! grep -F 'upsert_user_reg_section' ${probePackage}/libexec/url-broker-vm-setupEnv.sh | grep -F WineBrowser")
       machine.succeed(
           "timeout 60 bash -c 'until [ -e /tmp/nix-overlayfs-browser-url ]; do sleep 0.25; done' || "
           "{ echo PROBE_LOG; cat /tmp/nix-overlayfs-url-broker.log || true; "

@@ -74,11 +74,16 @@ else
           for run in ["first", "second"]:
               launch(run)
               machine.succeed(f"grep -Fx disable /tmp/{run}.timestamp")
-          machine.succeed(f"grep -Fx disable {upper}/.update-timestamp")
+          # The marker comes from the launcher's integration layer.
+          machine.succeed(f"test ! -e {upper}/.update-timestamp")
 
       with subtest("the opt-out exposes the Nix layers' timestamp again"):
           launch("optout", "NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1")
           machine.succeed("grep -Fx 1 /tmp/optout.timestamp")
+          machine.succeed(f"grep -Fx 1 {upper}/.update-timestamp")
+          # Back to the default: the integration layer's marker applies again.
+          launch("again")
+          machine.succeed("grep -Fx disable /tmp/again.timestamp")
           machine.succeed(f"test ! -e {upper}/.update-timestamp")
 
       with subtest("Wine builtin copies stop hiding the Nix layers when they change"):

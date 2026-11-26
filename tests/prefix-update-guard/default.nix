@@ -25,33 +25,37 @@ pkgs.runCommand "prefix-update-guard-test"
   ''
     set -euo pipefail
 
-    # No timestamp at all: Wine would run a full update, so the guard adds one.
-    mkdir missing
-    ${guard} missing
-    test "$(cat missing/.update-timestamp)" = disable
-
-    # A numeric timestamp left by an earlier update is replaced.
-    mkdir numeric
+    # The "disable" marker comes from the launcher's integration layer; the
+    # writable layer must not hide it, so a timestamp or marker there (from
+    # an earlier update, or from launchers before the integration layer) is
+    # removed.
+    integration="${package.integrationLayer}"
+    test "$(cat "$integration/.update-timestamp")" = disable
+    mkdir -p base missing numeric disabled
+    printf '7\n' > base/.update-timestamp
+    ${guard} missing "$integration" "$PWD/base"
+    test ! -e missing/.update-timestamp
     printf '1\n' > numeric/.update-timestamp
-    ${guard} numeric
-    test "$(cat numeric/.update-timestamp)" = disable
-
-    # An existing marker is left alone (including a user's own "disable").
-    mkdir disabled
-    printf 'disable by hand\n' > disabled/.update-timestamp
-    ${guard} disabled
-    test "$(cat disabled/.update-timestamp)" = "disable by hand"
-
-    # A missing writable layer is created.
-    ${guard} new/appdir
-    test "$(cat new/appdir/.update-timestamp)" = disable
-
-    # The opt-out removes the marker so the Nix layers' timestamp applies.
-    NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 ${guard} numeric
+    ${guard} numeric "$integration" "$PWD/base"
     test ! -e numeric/.update-timestamp
+    printf 'disable\n' > disabled/.update-timestamp
+    ${guard} disabled "$integration" "$PWD/base"
+    test ! -e disabled/.update-timestamp
+
+    # The opt-out gives the writable layer the timestamp of the highest
+    # layer without the marker, so the Nix layers' timestamp applies again
+    # (an empty one, as if missing, when no layer has one) ...
+    NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 ${guard} numeric "$integration" "$PWD/base"
+    test "$(cat numeric/.update-timestamp)" = 7
+    NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 ${guard} new/appdir "$integration"
+    test -f new/appdir/.update-timestamp -a ! -s new/appdir/.update-timestamp
+    # ... and keeps one Wine wrote meanwhile.
     printf '42\n' > numeric/.update-timestamp
-    NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 ${guard} numeric
+    NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 ${guard} numeric "$integration" "$PWD/base"
     test "$(cat numeric/.update-timestamp)" = 42
+    # Back to the default: removed again.
+    ${guard} numeric "$integration" "$PWD/base"
+    test ! -e numeric/.update-timestamp
 
     ! ${guard} 2>/dev/null
 
