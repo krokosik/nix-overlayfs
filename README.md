@@ -230,8 +230,18 @@ without the writable layer). For each value:
 | lacks it | lacks it | the layers' value, if any |
 
 So a value the user never touched follows the layers when a rebuilt layer
-changes, adds or removes it, and what the user changed stays. `REG_SZ` `"1"`
-and `REG_DWORD` `1` are different values. A key without values follows the
+changes, adds or removes it, and what the user changed stays.
+
+Keys and values are matched as Wine matches them: key paths and value names
+without regard to case (ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic
+letters), `@` as the empty name, escapes decoded. Values are compared by type
+and data, whatever form the file writes them in: `"a"`, `str(1):"a"` and
+`hex(1):61,00,00,00` are the same `REG_SZ`; `str(2):"a"` and
+`hex(2):61,00,00,00` the same `REG_EXPAND_SZ` (Wine saves terminated strings
+in string form); `dword:00000001` and `hex(4):01,00,00,00` the same
+`REG_DWORD`; how long hex values are broken over lines does not matter. A
+different type is a different value, so `REG_SZ` `"1"` and `REG_DWORD` `1`
+differ. The merged hive keeps the text of the side that won. A key without values follows the
 same rules: one the user deleted stays deleted, one the layers no longer have
 is removed unless the user created it. A key the user deleted comes back if a
 layer adds a new value to it. A hive missing from the writable layer is taken

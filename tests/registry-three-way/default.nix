@@ -218,5 +218,71 @@ grep -F 'ignoring the registry base record' base.log
 has fail '"Untouched"="kept"'
 grep -Fx '"Untouched"="1"' fail-state/registry-base/user.reg
 
+# Values are compared as Wine sees them: key paths and value names without
+# regard to case, @ as the empty name, data by type and bytes whatever form
+# it is written in. A type change is a change.
+layer forms1 <<'EOF'
+[Software\\Forms]
+@="default"
+"Expand"=hex(2):61,00,00,00
+"Sz"=hex(1):61,00,00,00
+"Dw"=hex(4):01,00,00,00
+"Multi"=hex(7):61,00,00,00,62,00,00,00,00,00
+"Esc"="a\\b"
+"Uni"="\x00e9"
+"Case"="1"
+"Wrapped"=hex:00,01,02,03,04,05,06,07,08,09,0a,0b,0c,0d,0e,0f,10,11,12,13,14,15,16,17,18,19,1a,1b,1c
+"TypeChange"="1"
+"Retyped"=hex(2):31,00,00,00
+EOF
+layer forms2 <<'EOF'
+[Software\\Forms]
+@="new default"
+"Expand"=str(2):"b"
+"Sz"="b"
+"Dw"=dword:00000002
+"Multi"=str(7):"c\0"
+"Esc"="new"
+"Uni"="new"
+"Case"="2"
+"Wrapped"=hex:ff
+"TypeChange"="2"
+"Retyped"="2"
+EOF
+merge forms "$PWD/forms1"
+# Wine saves the same values in its own forms; the user changes the type of
+# two values (the data stays the same bytes or digits).
+hive forms user 'User\\S-1-5-21-0-0-0-1000' <<'EOF'
+[software\\FORMS] 1700000000
+""="default"
+"Expand"=str(2):"a"
+"Sz"="a"
+"Dw"=dword:00000001
+"Multi"=str(7):"a\0b\0"
+"Esc"="a\x005cb"
+"Uni"="é"
+"CASE"="1"
+"Wrapped"=hex:00,01,02,03,04,05,06,07,08,09,0a,0b,0c,0d,0e,0f,10,11,12,13,14,15,\
+  16,17,18,19,1a,1b,1c
+"TypeChange"=dword:00000001
+"Retyped"=str(1):"1"
+EOF
+merge forms "$PWD/forms2"
+cat forms/user.reg
+has forms '@="new default"'
+lacks forms '""="default"'
+has forms '"Expand"=str(2):"b"'
+has forms '"Sz"="b"'
+has forms '"Dw"=dword:00000002'
+has forms '"Multi"=str(7):"c\0"'
+has forms '"Esc"="new"'
+has forms '"Uni"="new"'
+has forms '"Case"="2"'
+lacks forms '"CASE"="1"'
+has forms '"Wrapped"=hex:ff'
+has forms '"TypeChange"=dword:00000001'
+has forms '"Retyped"=str(1):"1"'
+test "$(grep -ci '^\[software\\\\forms\]' forms/user.reg)" -eq 1
+
 touch "$out"
 ''
