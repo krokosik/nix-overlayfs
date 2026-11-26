@@ -46,5 +46,21 @@ pkgs.runCommand "wine-registry-link-roundtrip"
       ! grep -q '__wine_link' merged/system.reg
       reg2json merged/system.reg > merged.json
       jq -e '.keys.Alias.__wine_link == "1" and .keys.Ordinary["\"added\""] == "\"layer\""' merged.json
+
+      # A layer that removes the link flag: its difference-only hive says
+      # #-link, and merging it gives what composing the JSON gives.
+      cat > unlink.json <<'EOF'
+    {"version":"2","location":"REGISTRY\\\\Machine","arch":"win64","keys":{"Alias":{"__wine_link":null}}}
+    EOF
+      json2reg --deletions unlink.json unlink.reg
+      grep -Fx '#-link' unlink.reg
+      mkdir unlink unmerged
+      cp unlink.reg unlink/system.reg
+      merge-wine-registries unmerged base unlink
+      ! grep -qx '#link' unmerged/system.reg
+      grep -Fx '"SymbolicLinkValue"=hex(6):5c,00,52,00,\' unmerged/system.reg
+      jq -s '.[0] * .[1]' before.json unlink.json > composed.json
+      json2reg composed.json composed.reg
+      diff <(reg2json composed.reg | jq -S .) <(reg2json unmerged/system.reg | jq -S .)
       touch "$out"
   ''

@@ -43,6 +43,7 @@ struct Registry {
     Keys keys;
     /* A layer's hive can delete what the layers below it give: [-path]
        deletes that key's values (not its subkeys), "name"=- one value.
+       #-link and #-class in a key remove its symbolic-link flag and class.
        Wine never writes these; they are applied when layers are merged. */
     std::map<std::string, std::string> deleted_keys;
 };
@@ -463,6 +464,12 @@ std::optional<Registry> parse_registry(const fs::path &path, std::string &error)
         }
 
         if (line.empty() || blank(line)) {
+            continue;
+        }
+
+        /* A layer's removal of a key's symbolic-link flag or class. */
+        if ((line == "#-link" || line == "#-class") && section) {
+            section->values[line == "#-link" ? link_flag : class_flag] = Value{line.substr(2), deleted_value};
             continue;
         }
 

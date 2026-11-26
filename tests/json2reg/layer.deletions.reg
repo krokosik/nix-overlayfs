@@ -8,3 +8,6 @@ WINE REGISTRY Version 2
 "FontSmoothingType"=dword:00000002
 
 [-Software\\Gone]
+
+[Software\\Unlinked]
+#-link

@@ -531,8 +531,9 @@ is the exception: it is the bottom layer and has the complete hives. An
 installation built with `mkWindowsPackage` captures its hives as the
 difference between the registry Wine saved after the installer and the hive
 its dependencies compose to: the keys and values it added or changed, and
-what it deleted, written as `"name"=-` (a value) and `[-key]` (that key's
-values, not its subkeys). `HIVE.json` holds the same difference as a JSON
+what it deleted, written as `"name"=-` (a value), `[-key]` (that key's
+values, not its subkeys) and, in a key, `#-link` (its symbolic-link flag; `#-class`
+removes a key's class the same way). `HIVE.json` holds the same difference as a JSON
 merge patch (deletions as `null`), which dependent builds compose on.
 
 At launch the layers' hives are merged in launch order, lowest priority
