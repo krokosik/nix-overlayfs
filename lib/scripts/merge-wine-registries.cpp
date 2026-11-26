@@ -1031,7 +1031,7 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
             return 1;
         }
 
-        /* Launchers before the integration layer wrote its keys into the
+        /* Earlier launchers wrote the integration layer's keys into the
            writable hive at every launch. Without a base record they would
            win and stay; taking the values it has as unchanged gives them to
            the layers. */

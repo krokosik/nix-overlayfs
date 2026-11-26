@@ -13,7 +13,7 @@
 # record that does not match its manifest fails the merge. DIR, one of the
 # SOURCEs, is the launcher's integration layer: on a merge without a base
 # record, the keys it has are taken from the layers, not from APPDIR, where
-# launchers before it wrote them at every launch. Writes the
+# earlier launchers wrote them at every launch. Writes the
 # resolved Nix layer paths to SIGNATURE_NEXT and merges again only when they
 # differ from SIGNATURE (the last successful merge) or a registry file is
 # missing. A failed merge removes SIGNATURE, so the next call merges again;

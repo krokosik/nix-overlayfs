@@ -27,7 +27,7 @@ pkgs.runCommand "prefix-update-guard-test"
 
     # The "disable" marker comes from the launcher's integration layer; the
     # writable layer must not hide it, so a timestamp or marker there (from
-    # an earlier update, or from launchers before the integration layer) is
+    # an earlier update, or from launchers that predate the integration layer) is
     # removed.
     integration="${package.integrationLayer}"
     test "$(cat "$integration/.update-timestamp")" = disable

@@ -15,7 +15,7 @@
 # The launcher's integration layer, the highest of the LOWERDIRs (highest
 # priority first), has a .update-timestamp that says "disable". The writable
 # layer APPDIR must not hide it: a .update-timestamp there (the marker
-# launchers wrote before the integration layer existed, or the timestamp of
+# that launchers wrote before the integration layer existed, or the timestamp of
 # an update Wine ran while updates were allowed) is removed.
 #
 # NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 restores Wine's default behaviour: APPDIR

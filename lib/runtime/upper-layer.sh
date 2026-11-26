@@ -12,7 +12,7 @@
 # clean-start-shim: the start.exe shim of SHIM (the hostStartShim package:
 # bin/x86_64/start.exe and bin/i686/start.exe), with which "start <url>"
 # opens the host browser, comes from the launcher's integration layer.
-# Launchers before it copied the shim into APPDIR's system32 and syswow64 for
+# Earlier launchers copied the shim into APPDIR's system32 and syswow64 for
 # each session; a copy left there (a session that was killed) is removed, so
 # it does not hide the layer's. Other files are left alone.
 #

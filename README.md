@@ -209,8 +209,8 @@ layers; a Wine change that needs new prefix contents belongs in a rebuilt
 base environment.
 
 Before mounting, the launcher removes a `.update-timestamp` from the writable
-layer, where it would hide the marker (launchers before the integration layer
-wrote the marker there). Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore
+layer, where it would hide the marker (launchers from before the integration
+layer wrote the marker there). Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore
 Wine's default behaviour for a launch: the writable layer then gets the
 timestamp of the highest Nix layer without the marker (an empty one if none
 has a timestamp), and the next launch without the variable removes it again.
@@ -233,8 +233,8 @@ The layer changes with the launcher only, so a rebuilt launcher (another
 opener store path, another scheme) reaches existing users through the
 [registry merge](#registry). Its `user.reg` has only these keys, so it masks
 no other layer's values. On the first merge without a base record, the values
-these keys have in the writable layer (launchers before wrote them there at
-every launch) are taken as unchanged, so the layer's win. Copies of the shim
+that these keys have in the writable layer are taken as unchanged (earlier
+launchers wrote them there at every launch), so the layer's values win. Copies of the shim
 that earlier launchers left in the writable layer are removed before mounting.
 
 What a launch still writes into the writable layer: the merged registry
@@ -245,7 +245,7 @@ schemes when `executablePath` is not below `drive_c` (its Windows path
 depends on the session's mount point). Hooks that call
 `nix_overlayfs_upsert_user_reg_section` write there too;
 `nix_overlayfs_configure_host_browser` and `nix_overlayfs_remove_start_shim`
-are kept for hooks but do nothing now.
+are kept so that existing hooks still work, but they do nothing now.
 
 ### Registry
 
@@ -265,22 +265,22 @@ without the writable layer). For each value:
 | lacks it | has it | none (the user deleted it) |
 | lacks it | lacks it | the layers' value, if any |
 
-So a value the user never touched follows the layers when a rebuilt layer
-changes, adds or removes it, and what the user changed stays.
+So a value that the user never touched follows the layers when a rebuilt layer
+changes, adds or removes it, and a value that the user changed stays.
 
 Keys and values are matched as Wine matches them: key paths and value names
 without regard to case (ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic
 letters), `@` as the empty name, escapes decoded. Values are compared by type
 and data, whatever form the file writes them in: `"a"`, `str(1):"a"` and
 `hex(1):61,00,00,00` are the same `REG_SZ`; `str(2):"a"` and
-`hex(2):61,00,00,00` the same `REG_EXPAND_SZ` (Wine saves terminated strings
+`hex(2):61,00,00,00` are the same `REG_EXPAND_SZ` (Wine saves terminated strings
 in string form); `dword:00000001` and `hex(4):01,00,00,00` the same
-`REG_DWORD`; how long hex values are broken over lines does not matter. A
+`REG_DWORD`; it does not matter where long hex values are broken over lines. A
 different type is a different value, so `REG_SZ` `"1"` and `REG_DWORD` `1`
 differ. The merged hive keeps the text of the side that won. A key without values follows the
-same rules: one the user deleted stays deleted, one the layers no longer have
-is removed unless the user created it. A key the user deleted comes back if a
-layer adds a new value to it. A hive missing from the writable layer is taken
+same rules: a key that the user deleted stays deleted, and a key that the layers
+no longer have is removed unless the user created it. A key that the user deleted
+comes back if a layer adds a new value to it. A hive missing from the writable layer is taken
 from the layers as it is.
 
 A writable layer from before the base record is merged as before, with the
@@ -534,14 +534,14 @@ At launch the layers' hives are merged in launch order, lowest priority
 first: each value comes from the highest layer that sets it, and a deletion
 removes what the layers below gave. So a layer above (an application) does
 not mask a setting of a layer below (a configuration layer) that it did not
-change itself; with complete hives it carried the base environment's value
-and won.
+change itself. (When layers held complete hives, the layer above carried the
+base environment's value and overrode the layer below.)
 
 Values the capture leaves out of a layer (installation dates, paths of
 temporary directories, `lib/diffs`) are left out on both sides, so they are
 not taken for deletions; nor is a key of the dependencies that has subkeys
 but no values, which Wine does not write. Deletions are for layers only: a
-writable hive with one fails the merge. Hand-written layer hives (for
+writable hive that contains one fails the merge. Hand-written layer hives (for
 example `mkFileLayer`'s) contain just their own keys and values.
 
 ## Installing and launching with different Wine builds

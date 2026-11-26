@@ -110,8 +110,8 @@ lacks app '"Deleted"="1"'
 # The user's REG_SZ is a change of the layers' REG_DWORD, even with the
 # same digits.
 has app '"UserType"="1"'
-# Keys: one the user deleted stays deleted, one the layers dropped is
-# removed, one the user added stays.
+# Keys: a key that the user deleted stays deleted, a key that the layers
+# dropped is removed, and a key that the user added stays.
 ! grep -F '[Software\\Pkg\\EmptyKey]' app/user.reg
 ! grep -F '[Software\\Pkg\\DroppedKey]' app/user.reg
 grep -F '[Software\\Mine]' app/user.reg
@@ -386,7 +386,7 @@ cmp del-bad.reg del/user.reg
 
 # The launcher's integration layer: on a merge without a base record, the
 # keys it has come from the layers, not from the writable hive, where
-# launchers before it wrote them (with a store path that may be gone).
+# earlier launchers wrote them (with a store path that may be gone).
 layer lbase <<'EOF'
 [Software\\Wine\\WineBrowser]
 "Browsers"="layer opener"
