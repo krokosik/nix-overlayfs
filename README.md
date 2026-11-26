@@ -272,6 +272,10 @@ launch, before it merges. A failed merge keeps the old base, has no
 signature and lets the launch go on; the next launch merges again. Delete
 `.nix-overlayfs/registry-sources` to merge on the next launch anyway.
 
+Layers hold only their own changes (see [Registry of a layer](#registry-of-a-layer)),
+so a setting in a lower layer is not masked by a layer above that does not
+touch it.
+
 Package settings belong in a layer (a `mkFileLayer`'s
 `registryDllOverrides`, or a layer whose build writes the registry). Do not
 write them into the writable layer at every launch with `wine reg add` in
@@ -475,6 +479,32 @@ layers: for a dependency that is itself a package (it has
 Changes that only affect launchers (environment, DLL overrides, URL handling,
 the launcher scripts of this library) therefore do not rebuild dependent
 installations.
+
+### Registry of a layer
+
+A layer's `system.reg`, `user.reg` and `userdef.reg` hold only what it
+changes against the layers below it, not complete hives. The base environment
+is the exception: it is the bottom layer and has the complete hives. An
+installation built with `mkWindowsPackage` captures its hives as the
+difference between the registry Wine saved after the installer and the hive
+its dependencies compose to: the keys and values it added or changed, and
+what it deleted, written as `"name"=-` (a value) and `[-key]` (that key's
+values, not its subkeys). `HIVE.json` holds the same difference as a JSON
+merge patch (deletions as `null`), which dependent builds compose on.
+
+At launch the layers' hives are merged in launch order, lowest priority
+first: each value comes from the highest layer that sets it, and a deletion
+removes what the layers below gave. So a layer above (an application) does
+not mask a setting of a layer below (a configuration layer) that it did not
+change itself; with complete hives it carried the base environment's value
+and won.
+
+Values the capture leaves out of a layer (installation dates, paths of
+temporary directories, `lib/diffs`) are left out on both sides, so they are
+not taken for deletions; nor is a key of the dependencies that has subkeys
+but no values, which Wine does not write. Deletions are for layers only: a
+writable hive with one fails the merge. Hand-written layer hives (for
+example `mkFileLayer`'s) contain just their own keys and values.
 
 ## Installing and launching with different Wine builds
 

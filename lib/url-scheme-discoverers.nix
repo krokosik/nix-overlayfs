@@ -28,7 +28,7 @@ let
           scheme = section
           if (scheme ~ /\\\\/) scheme = ""
         }
-        /^"URL Protocol"=/ && scheme != "" {
+        /^"URL Protocol"=/ && !/^"URL Protocol"=-$/ && scheme != "" {
           print scheme
         }
       ' "$reg_file"

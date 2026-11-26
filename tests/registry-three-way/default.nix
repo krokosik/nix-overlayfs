@@ -347,5 +347,42 @@ has forms '"TypeChange"=dword:00000001'
 has forms '"Retyped"=str(1):"1"'
 test "$(grep -ci '^\[software\\\\forms\]' forms/user.reg)" -eq 1
 
+# A layer's hive can delete what the layers below give: "name"=- a value,
+# [-key] that key's values (not its subkeys). Only layers may.
+layer dlow <<'EOF'
+[Software\\Del]
+"Gone"="1"
+"Stays"="1"
+
+[Software\\DelKey]
+"a"="1"
+
+[Software\\DelKey\\Sub]
+"b"="1"
+EOF
+hive dhigh user 'User\\S-1-5-21-0-0-0-1000' <<'EOF'
+[Software\\Del]
+"Gone"=-
+
+[-Software\\DelKey]
+
+[Software\\OnlyDeletes]
+"nothing"=-
+EOF
+merge del "$PWD/dlow" "$PWD/dhigh"
+has del '"Stays"="1"'
+lacks del '"Gone"="1"'
+lacks del '"a"="1"'
+has del '"b"="1"'
+! grep -F 'OnlyDeletes' del/user.reg
+! grep -F '=-' del/user.reg del-state/registry-base/user.reg
+cp del/user.reg del-before.reg
+printf '"Mine"=-\n' >> del/user.reg
+cp del/user.reg del-bad.reg
+rm del-state/registry-sources
+merge del "$PWD/dlow" "$PWD/dhigh" 2> del.log
+grep -F 'which only layers may have' del.log
+cmp del-bad.reg del/user.reg
+
 touch "$out"
 ''

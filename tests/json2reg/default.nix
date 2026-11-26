@@ -21,7 +21,10 @@ pkgs.stdenv.mkDerivation {
   buildPhase = ''
     for file in *.json; do
       filenoext=''${file%.json}
-      json2reg "$file" "$filenoext.reg.new"
+      case "$file" in
+        *.deletions.json) json2reg --deletions "$file" "$filenoext.reg.new" ;;
+        *) json2reg "$file" "$filenoext.reg.new" ;;
+      esac
       diff $filenoext.reg $filenoext.reg.new
     done
   '';

@@ -39,7 +39,13 @@ struct Registry {
     std::string location;
     std::string arch;
     Keys keys;
+    /* A layer's hive can delete what the layers below it give: [-path]
+       deletes that key's values (not its subkeys), "name"=- one value.
+       Wine never writes these; they are applied when layers are merged. */
+    std::map<std::string, std::string> deleted_keys;
 };
+
+const std::string deleted_value = "-";
 
 /* Key flags stored as values; the leading \x01 keeps them apart from every
    real value name. */
@@ -447,6 +453,11 @@ std::optional<Registry> parse_registry(const fs::path &path, std::string &error)
                 error = "malformed section header at line " + std::to_string(line_no);
                 return std::nullopt;
             }
+            if (line[1] == '-') {
+                registry.deleted_keys[key_identity(line.substr(2, close - 2))] = line.substr(2, close - 2);
+                section = nullptr;
+                continue;
+            }
             section = &key_for(registry, line.substr(1, close - 1));
             continue;
         }
@@ -546,6 +557,8 @@ bool load_hive(const fs::path &path, std::optional<Registry> &result)
     return true;
 }
 
+void apply_layer(Registry &result, const Registry &layer);
+
 /* Merges the hive REG_NAME of the sources (lowest priority first). A source
    hive that exists but cannot be read or parsed fails the merge: skipping
    it would drop its values, and when it is the writable layer's own hive,
@@ -558,23 +571,48 @@ bool merge_one(const std::string &reg_name, const std::vector<fs::path> &source_
         if (!load_hive(source_dir / reg_name, parsed)) return false;
         if (!parsed) continue;
 
-        if (!result) {
-            result = std::move(parsed);
-            continue;
-        }
-
-        result->version = parsed->version;
-        result->location = parsed->location;
-        result->arch = parsed->arch;
-        for (auto &[id, key] : parsed->keys) {
-            auto &merged = result->keys[id];
-            merged.path = key.path;
-            for (auto &[name_id, value] : key.values) {
-                merged.values[name_id] = value;
-            }
-        }
+        if (!result) result = Registry{};
+        apply_layer(*result, *parsed);
     }
     return true;
+}
+
+/* Puts the layer hive LAYER on top of RESULT: its header, its deletions,
+   then its keys and values. A key that only deletes values is not created. */
+void apply_layer(Registry &result, const Registry &layer)
+{
+    result.version = layer.version;
+    result.location = layer.location;
+    result.arch = layer.arch;
+    for (const auto &entry : layer.deleted_keys) result.keys.erase(entry.first);
+    for (const auto &[id, key] : layer.keys) {
+        bool only_deletions = !key.values.empty();
+        for (const auto &value : key.values) {
+            if (value.second.data != deleted_value) only_deletions = false;
+        }
+        auto existing = result.keys.find(id);
+        if (existing == result.keys.end()) {
+            if (only_deletions) continue;
+            existing = result.keys.emplace(id, Key{}).first;
+        }
+        existing->second.path = key.path;
+        for (const auto &[name_id, value] : key.values) {
+            if (value.data == deleted_value) existing->second.values.erase(name_id);
+            else existing->second.values[name_id] = value;
+        }
+    }
+}
+
+/* Whether a hive has deletions, which only layers may have. */
+bool has_deletions(const Registry &registry)
+{
+    if (!registry.deleted_keys.empty()) return true;
+    for (const auto &key : registry.keys) {
+        for (const auto &value : key.second.values) {
+            if (value.second.data == deleted_value) return true;
+        }
+    }
+    return false;
 }
 
 /* Whether the key ID exists in KEYS: written out, or implied by a subkey
@@ -985,6 +1023,11 @@ int merge_with_base(const State &state, const std::vector<fs::path> &layer_dirs)
         std::optional<Registry> writable;
         if (!merge_one(reg_names[i], layer_dirs, layers[i])) return 1;
         if (!load_hive(state.writable / reg_names[i], writable)) return 1;
+        if (writable && has_deletions(*writable)) {
+            std::cerr << "error: the writable hive " << state.writable / reg_names[i]
+                      << " has deletions ([-key] or \"name\"=-), which only layers may have\n";
+            return 1;
+        }
 
         /* Without a writable hive there is nothing of the user's to keep,
            and the base would only delete the layers' values. */

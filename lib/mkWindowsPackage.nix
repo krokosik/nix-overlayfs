@@ -393,30 +393,60 @@ let
           rm --recursive --force "./data/drive_c/ProgramData/Microsoft/Windows/Start Menu/Programs/"
           find ./data/ -type d -empty -delete
 
+          # A layer's hives hold only its own changes against its
+          # dependencies (the hives they compose to): the values and keys it
+          # added or changed, and as [-key] or "name"=- what it deleted.
+          # Complete hives would re-assert every dependency value in this
+          # layer and, since it is merged above them, mask what other layers
+          # below it change. HIVE.json is the same delta as a JSON merge
+          # patch, which dependent builds compose on. What the capture
+          # leaves out of the new hive (installation dates, temporary paths,
+          # the noise in lib/diffs) is left out of the dependencies' hives
+          # too before comparing, so it is not taken for a deletion.
+          nix_overlayfs_capture_hive() {
+            local hive="$1"
+            local filter="$2"
+            local noise="$3"
+
+            reg2json "./data/$hive.reg" > "$hive.new.json"
+            jq '${jqRemoveNulls}' "$hive.new.json" | sponge "$hive.new.json"
+            if [ -n "$noise" ]; then
+              jd -p -f=merge -o "$hive.new.json" "$noise" "$hive.new.json" || true
+            else
+              noise=/dev/null
+            fi
+            # (The composed hive keeps the nulls of its dependencies'
+            # deletions; json2reg dropped them from the prefix.)
+            jq -s "((.[0] * (.[1] // {})) | del(.. | nulls)) | $filter" "$hive.json" "$noise" > "$hive.before.json"
+            jd -f=merge -o "$hive.diff.json" "$hive.before.json" "$hive.new.json" || true
+            [ -s "$hive.diff.json" ] || printf '{}' > "$hive.diff.json"
+            # Wine does not write keys that have subkeys but no values, so
+            # such a key of the dependencies looks deleted; only keys that
+            # had values are.
+            jq -s '.[2] as $before | .[0] | if .keys then .keys |= with_entries(select(.value != null or (($before.keys[.key] // {}) | length) > 0)) else . end' \
+              "$hive.diff.json" "$hive.new.json" "$hive.before.json" > "./data/$hive.json"
+            jq -s '{version: .[1].version, location: .[1].location, arch: .[1].arch, keys: (.[0].keys // {})}' \
+              "./data/$hive.json" "$hive.new.json" > "$hive.delta.json"
+            json2reg --deletions "$hive.delta.json" "./data/$hive.reg"
+          }
+
           if [ -e ./data/system.reg ]; then
             sed -i '/^"InstallDate"=/d' ./data/system.reg
             sed -i '/^"FirstInstallDateTime"=/d' ./data/system.reg
-            reg2json ./data/system.reg > system.new.json
-            jq '${jqRemoveNulls}' system.new.json | sponge system.new.json
-            jd -p -f=merge -o system.new.json "${diffs.system}" system.new.json || true
-            jd -f=merge -o ./data/system.json system.json system.new.json || true
-            json2reg system.new.json ./data/system.reg
+            nix_overlayfs_capture_hive system \
+              '.keys |= with_entries(if (.value | type) == "object" then .value |= with_entries(select(.key != "\"InstallDate\"" and .key != "\"FirstInstallDateTime\"")) else . end)' \
+              "${diffs.system}"
           fi
 
           if [ -e ./data/user.reg ]; then
             sed -i -E '/tmp.[0-9A-Za-z]{10}/d' ./data/user.reg
-            reg2json ./data/user.reg > user.new.json
-            jq '${jqRemoveNulls}' user.new.json | sponge user.new.json
-            jd -p -f=merge -o user.new.json "${diffs.user}" user.new.json || true
-            jd -f=merge -o ./data/user.json user.json user.new.json || true
-            json2reg user.new.json ./data/user.reg
+            nix_overlayfs_capture_hive user \
+              '.keys |= with_entries(select(.key | test("tmp.[0-9A-Za-z]{10}") | not) | if (.value | type) == "object" then .value |= with_entries(select("\(.key)=\(.value)" | test("tmp.[0-9A-Za-z]{10}") | not)) else . end)' \
+              "${diffs.user}"
           fi
 
           if [ -e ./data/userdef.reg ]; then
-            reg2json ./data/userdef.reg > userdef.new.json
-            jq '${jqRemoveNulls}' userdef.new.json | sponge userdef.new.json
-            jd -f=merge -o ./data/userdef.json userdef.json userdef.new.json || true
-            json2reg userdef.new.json ./data/userdef.reg
+            nix_overlayfs_capture_hive userdef . ""
           fi
 
           # A successful no-op installer can legitimately produce no drive_c
