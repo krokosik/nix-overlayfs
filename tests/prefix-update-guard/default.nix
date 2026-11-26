@@ -42,6 +42,23 @@ pkgs.runCommand "prefix-update-guard-test"
     ${guard} disabled "$integration" "$PWD/base"
     test ! -e disabled/.update-timestamp
 
+    # A whiteout of the marker would hide it as well: the .wh. file form is
+    # removed (the 0/0 character device form is tested in runtime-state-vm,
+    # since mknod needs privileges).
+    mkdir whiteout
+    touch whiteout/.wh..update-timestamp
+    ${guard} whiteout "$integration" "$PWD/base"
+    test ! -e whiteout/.wh..update-timestamp
+    ln -s /nowhere whiteout/.wh..update-timestamp
+    NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 ${guard} whiteout "$integration" "$PWD/base"
+    test ! -L whiteout/.wh..update-timestamp
+    test "$(cat whiteout/.update-timestamp)" = 7
+    # An opaque writable root cannot be repaired; it is reported.
+    mkdir opaque
+    touch opaque/.wh..wh..opq
+    ${guard} opaque "$integration" 2> opaque.log
+    grep -F 'is opaque' opaque.log
+
     # The opt-out gives the writable layer the timestamp of the highest
     # layer without the marker, so the Nix layers' timestamp applies again
     # (an empty one, as if missing, when no layer has one) ...
@@ -64,9 +81,14 @@ pkgs.runCommand "prefix-update-guard-test"
     awk '
       /nix-overlayfs-guard-prefix-updates "\$appdir"/ && !guard { guard = NR }
       /\/bin\/fuse-overlayfs( |$)/ && !mount { mount = NR }
+      /has no .update-timestamp that says disable/ && !check { check = NR }
       END {
         if (!guard || !mount || guard >= mount) {
           print "the prefix update guard must run before fuse-overlayfs mounts" > "/dev/stderr"
+          exit 1
+        }
+        if (!check || check <= mount) {
+          print "the launcher must check the mounted marker after mounting" > "/dev/stderr"
           exit 1
         }
       }

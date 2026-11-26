@@ -16,7 +16,12 @@
 # priority first), has a .update-timestamp that says "disable". The writable
 # layer APPDIR must not hide it: a .update-timestamp there (the marker
 # that launchers wrote before the integration layer existed, or the timestamp of
-# an update Wine ran while updates were allowed) is removed.
+# an update Wine ran while updates were allowed) is removed, and so is a
+# whiteout of it, in either form fuse-overlayfs reads: a .wh..update-timestamp
+# file, or .update-timestamp as a 0/0 character device. A writable root that is
+# opaque (.wh..wh..opq, or an opaque xattr) hides every layer; that cannot be
+# repaired here and is reported. The launcher checks after mounting that the
+# prefix's .update-timestamp says "disable" and does not start Wine otherwise.
 #
 # NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1 restores Wine's default behaviour: APPDIR
 # gets the timestamp of the highest LOWERDIR whose file does not start with
@@ -35,6 +40,21 @@ timestamp="$appdir/.update-timestamp"
 starts_with_disable() {
   [ "$(head -c 7 -- "$1" 2>/dev/null)" = disable ]
 }
+
+# Whiteouts hide the layers' file in both modes.
+rm -f -- "$appdir/.wh..update-timestamp"
+if [ -c "$timestamp" ]; then
+  rm -f -- "$timestamp"
+fi
+
+if [ -e "$appdir/.wh..wh..opq" ] || [ -L "$appdir/.wh..wh..opq" ]; then
+  echo "error: nix-overlayfs: the writable layer $appdir is opaque (.wh..wh..opq): it hides every Nix layer, including the prefix-update marker" >&2
+fi
+for name in trusted.overlay.opaque user.overlay.opaque user.fuseoverlayfs.opaque; do
+  if [ "$(getfattr --only-values --absolute-names -n "$name" -- "$appdir" 2>/dev/null)" = y ]; then
+    echo "error: nix-overlayfs: the writable layer $appdir is opaque ($name): it hides every Nix layer, including the prefix-update marker" >&2
+  fi
+done
 
 if [ "${NIX_OVERLAYFS_WINE_PREFIX_UPDATES:-0}" != 1 ]; then
   rm -f -- "$timestamp"

@@ -210,7 +210,12 @@ base environment.
 
 Before mounting, the launcher removes a `.update-timestamp` from the writable
 layer, where it would hide the marker (launchers from before the integration
-layer wrote the marker there). Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore
+layer wrote the marker there), and a whiteout of it in either form
+fuse-overlayfs reads (a `.wh..update-timestamp` file, or `.update-timestamp` as
+a 0/0 character device). A writable root that is opaque hides every layer and is
+reported. After mounting, the launcher checks that the prefix's
+`.update-timestamp` says `disable`, and stops with an error instead of starting
+Wine if it does not. Set `NIX_OVERLAYFS_WINE_PREFIX_UPDATES=1` to restore
 Wine's default behaviour for a launch: the writable layer then gets the
 timestamp of the highest Nix layer without the marker (an empty one if none
 has a timestamp), and the next launch without the variable removes it again.

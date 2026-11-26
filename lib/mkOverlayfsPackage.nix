@@ -644,6 +644,15 @@ stdenv.mkDerivation {
 
           cd "$tempdir/overlay/" || exit 1
 
+          # Wine must not update the prefix into the writable layer (see
+          # nix-overlayfs-guard-prefix-updates): the integration layer's
+          # marker has to be what the mounted prefix shows.
+          if [ "''${NIX_OVERLAYFS_WINE_PREFIX_UPDATES:-0}" != 1 ] \
+            && [ "$(${pkgs.coreutils}/bin/head -c 7 -- "$tempdir/overlay/.update-timestamp" 2>/dev/null)" != disable ]; then
+            echo "error: nix-overlayfs: the mounted prefix of ${basePackageName} has no .update-timestamp that says disable; something in the writable layer $appdir hides the launcher's (see the messages above). Not starting: Wine would update the prefix into the writable layer." >&2
+            exit 1
+          fi
+
           ${if session == null then "" else renderEnvExports session.env}
 
           nix_overlayfs_hide_ld_so_preload() {
